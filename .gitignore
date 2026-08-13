@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.log
+
+# SQLite database (runtime data)
+server/data/
+*.db
+*.db-shm
+*.db-wal
+
+.DS_Store
+.env
+.env.local
+
+# Local AI tooling / session files (not part of the app)
+.claude/
+.agents/
+skills-lock.json
+dev-dist/

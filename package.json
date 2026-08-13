@@ -1,0 +1,16 @@
+{
+  "name": "splitup",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm:dev --prefix server\" \"npm:dev --prefix web\"",
+    "build": "npm run build --prefix web",
+    "start": "NODE_ENV=production npm run start --prefix server",
+    "typecheck": "npm run typecheck --prefix web && npm run typecheck --prefix server",
+    "test": "npm test --prefix web"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3",
+    "playwright": "^1.61.1"
+  }
+}

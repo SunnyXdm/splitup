@@ -1,0 +1,218 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/sofia-sans";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Sofia Sans Variable', 'Sofia Sans', Arial, sans-serif;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --color-owed: var(--owed);
+    --color-owing: var(--owing);
+    --color-signal: var(--signal);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/*
+ * Splitup theme — Mastercard-inspired (see DESIGN.md).
+ * Canvas cream, warm ink black, pill radii, one signal orange used sparingly.
+ * Light-only by design.
+ */
+:root {
+    color-scheme: light;
+    --background: #f3f0ee;
+    --foreground: #141413;
+    --card: #fcfbfa;
+    --card-foreground: #141413;
+    --popover: #ffffff;
+    --popover-foreground: #141413;
+    --primary: #141413;
+    --primary-foreground: #f3f0ee;
+    --secondary: #ffffff;
+    --secondary-foreground: #141413;
+    --muted: #e9e5e0;
+    --muted-foreground: #696969;
+    --accent: #ece7e2;
+    --accent-foreground: #141413;
+    --destructive: #cf4500;
+    --border: rgb(20 20 19 / 0.12);
+    --input: rgb(20 20 19 / 0.18);
+    --ring: rgb(20 20 19 / 0.4);
+    --chart-1: #f37338;
+    --chart-2: #9a3a0a;
+    --chart-3: #3860be;
+    --chart-4: #696969;
+    --chart-5: #141413;
+    --radius: 1.25rem;
+    --sidebar: #fcfbfa;
+    --sidebar-foreground: #141413;
+    --sidebar-primary: #141413;
+    --sidebar-primary-foreground: #f3f0ee;
+    --sidebar-accent: #ece7e2;
+    --sidebar-accent-foreground: #141413;
+    --sidebar-border: rgb(20 20 19 / 0.12);
+    --sidebar-ring: rgb(20 20 19 / 0.4);
+    /* money semantics — the one addition to the DESIGN.md palette */
+    --owed: #2e6e4c;
+    --owing: #9a3a0a;
+    /* decorative orbital-arc / eyebrow-dot orange; never a CTA color */
+    --signal: #f37338;
+}
+
+/* Dark: the same warm-ink family inverted — cream text on near-black, pills flip. */
+.dark {
+    color-scheme: dark;
+    --background: #161514;
+    --foreground: #f3f0ee;
+    --card: #1f1e1c;
+    --card-foreground: #f3f0ee;
+    --popover: #242220;
+    --popover-foreground: #f3f0ee;
+    --primary: #f3f0ee;
+    --primary-foreground: #141413;
+    --secondary: #262421;
+    --secondary-foreground: #f3f0ee;
+    --muted: #2a2825;
+    --muted-foreground: #a5a09a;
+    --accent: #2a2825;
+    --accent-foreground: #f3f0ee;
+    --destructive: #ff6d2e;
+    --border: rgb(243 240 238 / 0.14);
+    --input: rgb(243 240 238 / 0.2);
+    --ring: rgb(243 240 238 / 0.4);
+    --sidebar: #1f1e1c;
+    --sidebar-foreground: #f3f0ee;
+    --sidebar-primary: #f3f0ee;
+    --sidebar-primary-foreground: #141413;
+    --sidebar-accent: #2a2825;
+    --sidebar-accent-foreground: #f3f0ee;
+    --sidebar-border: rgb(243 240 238 / 0.14);
+    --sidebar-ring: rgb(243 240 238 / 0.4);
+    --owed: #7fc99e;
+    --owing: #d99a6c;
+    --signal: #f37338;
+}
+
+/* AMOLED: true black for OLED screens. Applied ALONGSIDE .dark (so all
+   dark-variant styles hold); only the surfaces go to pure black. */
+.amoled {
+    --background: #000000;
+    --card: #0c0b0a;
+    --card-foreground: #f3f0ee;
+    --popover: #121110;
+    --secondary: #141312;
+    --muted: #161514;
+    --accent: #161514;
+    --border: rgb(243 240 238 / 0.16);
+    --input: rgb(243 240 238 / 0.22);
+    --sidebar: #0c0b0a;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    font-weight: 450;
+    }
+  html {
+    @apply font-sans;
+    }
+  h1, h2, h3, h4 {
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    }
+}
+
+@utility eyebrow {
+  /* Uppercase section label with the signature signal-orange dot */
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  &::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background: var(--signal);
+  }
+}
+
+/* Theme-switch reveal: the new theme sweeps over the old one as a blurred
+   circle expanding from the top-right corner (where the quick toggle lives).
+   Only runs when theme-provider wraps the change in startViewTransition. */
+::view-transition-old(root) {
+  /* Held static beneath the sweep for the full duration */
+  animation: circle-blur-hold 1s both;
+  z-index: -1;
+}
+
+::view-transition-new(root) {
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Cdefs%3E%3Cfilter id='blur' x='-50%25' y='-50%25' width='200%25' height='200%25'%3E%3CfeGaussianBlur stdDeviation='4'/%3E%3C/filter%3E%3C/defs%3E%3Ccircle cx='40' cy='0' r='20' fill='white' filter='url(%23blur)'/%3E%3C/svg%3E")
+    top right / 0 no-repeat;
+  transform-origin: top right;
+  animation: circle-blur-expand 1s ease-out both;
+  /* Expo-out: covers fast, settles gently; ease-out fallback above */
+  animation-timing-function: linear(
+    0 0%, 0.1684 2.66%, 0.3165 5.49%, 0.446 8.52%, 0.5581 11.78%,
+    0.6535 15.29%, 0.7341 19.11%, 0.8011 23.3%, 0.8557 27.93%,
+    0.8962 32.68%, 0.9283 38.01%, 0.9529 44.08%, 0.9711 51.14%,
+    0.9833 59.06%, 0.9915 68.74%, 1 100%
+  );
+}
+
+@keyframes circle-blur-expand {
+  to {
+    mask-size: 350vmax;
+  }
+}
+
+@keyframes circle-blur-hold {
+  to {
+    opacity: 1;
+  }
+}

@@ -1,0 +1,88 @@
+import { z } from 'zod';
+
+export const CATEGORIES = [
+  'general',
+  'food',
+  'groceries',
+  'transport',
+  'home',
+  'utilities',
+  'travel',
+  'shopping',
+  'entertainment',
+  'health',
+] as const;
+
+const MAX_CENTS = 100_000_000;
+const currency = z.string().regex(/^[A-Z]{3}$/);
+const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export const idParam = z.coerce.number().int().positive();
+export const inviteTokenParam = z.string().regex(/^[0-9a-f]{16,64}$/);
+
+export const sessionBody = z.strictObject({
+  idToken: z.string().min(10).max(8192),
+});
+
+export const meBody = z.strictObject({
+  name: z.string().trim().min(1).max(80).optional(),
+  defaultCurrency: currency.optional(),
+});
+
+export const groupCreateBody = z.strictObject({
+  name: z.string().trim().min(1).max(80),
+  emoji: z.string().min(1).max(8).optional(),
+  currency: currency.optional(),
+});
+
+export const groupPatchBody = z.strictObject({
+  name: z.string().trim().min(1).max(80).optional(),
+  emoji: z.string().min(1).max(8).optional(),
+  currency: currency.optional(),
+});
+
+export const memberBody = z.strictObject({
+  userId: z.number().int().positive(),
+});
+
+export const friendBody = z.strictObject({
+  email: z.string().trim().toLowerCase().regex(emailRe).max(254),
+});
+
+const shareSchema = z.strictObject({
+  userId: z.number().int().positive(),
+  paidCents: z.number().int().min(0).max(MAX_CENTS),
+  owedCents: z.number().int().min(0).max(MAX_CENTS),
+});
+
+export const expenseBody = z
+  .strictObject({
+    groupId: z.number().int().positive().nullable(),
+    description: z.string().trim().min(1).max(200),
+    amountCents: z.number().int().min(1).max(MAX_CENTS),
+    currency,
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .refine((d) => !Number.isNaN(Date.parse(d)), 'invalid date'),
+    category: z.enum(CATEGORIES),
+    notes: z.string().trim().max(1000).nullable(),
+    isPayment: z.boolean(),
+    shares: z.array(shareSchema).min(1).max(50),
+  })
+  .superRefine((e, ctx) => {
+    const userIds = new Set(e.shares.map((s) => s.userId));
+    if (userIds.size !== e.shares.length) {
+      ctx.addIssue({ code: 'custom', message: 'duplicate share user' });
+    }
+    const paid = e.shares.reduce((sum, s) => sum + s.paidCents, 0);
+    const owed = e.shares.reduce((sum, s) => sum + s.owedCents, 0);
+    if (paid !== e.amountCents || owed !== e.amountCents) {
+      ctx.addIssue({ code: 'custom', message: 'shares must sum to the amount' });
+    }
+    if (e.groupId === null && e.shares.length !== 2) {
+      ctx.addIssue({ code: 'custom', message: 'non-group expenses need exactly 2 people' });
+    }
+  });
+
+export type ExpenseBody = z.infer<typeof expenseBody>;

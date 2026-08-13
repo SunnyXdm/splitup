@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+web/dist
+server/data
+*.db
+*.db-shm
+*.db-wal
+.claude
+.agents
+.DS_Store
+compose.yaml
