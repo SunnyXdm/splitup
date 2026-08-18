@@ -59,8 +59,8 @@ export default function SignIn({ sessionExpired = false }: { sessionExpired?: bo
           </p>
         ) : null}
         <p className="max-w-sm text-balance text-muted-foreground">
-          Track shared expenses with friends and groups, see who owes what, and
-          settle up in a tap — even offline.
+          Track shared expenses with friends and groups, settle up in a tap,
+          and check who owes what anytime — even offline.
         </p>
         <Button
           size="lg"

@@ -143,9 +143,10 @@ function takeLargest(entries: { userId: number; cents: number }[]): { userId: nu
 }
 
 /**
- * Greedy min-transfer settlement suggestions: per currency, repeatedly match
- * the largest debtor with the largest creditor (ties broken by lower userId)
- * and transfer min(debt, credit). Settles every net to zero.
+ * Greedy settlement suggestions: per currency, repeatedly match the largest
+ * debtor with the largest creditor (ties broken by lower userId) and transfer
+ * min(debt, credit). Settles every net to zero in at most participants−1
+ * transfers per currency — few, deterministic, but not guaranteed minimal.
  */
 export function suggestSettlements(balances: NetBalance[]): Transfer[] {
   const byCurrency = new Map<string, NetBalance[]>();
