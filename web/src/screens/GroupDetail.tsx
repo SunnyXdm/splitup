@@ -180,7 +180,11 @@ export default function GroupDetail() {
       },
       onError: (err) => {
         setDeleteOpen(false);
-        toast.error(err.message);
+        if (err instanceof ApiError && err.status === 409) {
+          toast.error('The group has unsettled balances — settle everyone up before deleting it.');
+        } else {
+          toast.error(err.message);
+        }
       },
     });
   };

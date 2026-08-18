@@ -74,6 +74,16 @@ app.delete('/:id', (c) => {
   if (group.created_by !== me.id) {
     throw new HTTPException(403, { message: 'only the group creator can delete it' });
   }
+  // Deleting a group hides its expenses from every balance view, so it must
+  // not be able to erase live debts — same rule as leaving.
+  const unsettled = db
+    .prepare<[number], { user_id: number }>(
+      `SELECT s.user_id FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
+       WHERE e.group_id = ? AND e.deleted_at IS NULL
+       GROUP BY s.user_id, e.currency HAVING SUM(s.paid_cents - s.owed_cents) != 0 LIMIT 1`,
+    )
+    .get(id);
+  if (unsettled) throw new HTTPException(409, { message: 'unsettled' });
   db.transaction(() => {
     // Archive, never destroy: expenses/shares/members stay in the database so
     // nothing is lost; the group simply disappears from everyone's sync.

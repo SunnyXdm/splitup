@@ -19,10 +19,19 @@ import {
   type User,
 } from '../lib/wire';
 
-/** Non-deleted expenses visible to me: my groups' + non-group ones I'm part of. */
+/**
+ * Non-deleted expenses visible to me: my live groups' + non-group ones I'm
+ * part of. Deleted groups' expenses are excluded to match the groups list —
+ * otherwise the client receives rows whose group it cannot see and silently
+ * drops them from friend/total balances.
+ */
 const VISIBLE_EXPENSES_WHERE = `
   e.deleted_at IS NULL AND (
-    e.group_id IN (SELECT group_id FROM group_members WHERE user_id = ?)
+    e.group_id IN (
+      SELECT gm.group_id FROM group_members gm
+      JOIN groups g ON g.id = gm.group_id AND g.deleted_at IS NULL
+      WHERE gm.user_id = ?
+    )
     OR (e.group_id IS NULL AND EXISTS (
       SELECT 1 FROM expense_shares mine WHERE mine.expense_id = e.id AND mine.user_id = ?
     ))

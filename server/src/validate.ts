@@ -86,3 +86,49 @@ export const expenseBody = z
   });
 
 export type ExpenseBody = z.infer<typeof expenseBody>;
+
+const settleRow = z.strictObject({
+  groupId: z.number().int().positive().nullable(),
+  payerId: z.number().int().positive(),
+  recipientId: z.number().int().positive(),
+  amountCents: z.number().int().min(1).max(MAX_CENTS),
+});
+
+/** A batch of payment rows settling one friend balance atomically. */
+export const settlementsBody = z
+  .strictObject({
+    counterpartyId: z.number().int().positive(),
+    currency,
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .refine((d) => !Number.isNaN(Date.parse(d)), 'invalid date'),
+    /**
+     * Freshness fingerprint of the pair-scope expenses the client's breakdown
+     * was computed from: max updatedAt + row count. Any difference → 409.
+     */
+    watermark: z.string().max(40).optional(),
+    watermarkCount: z.number().int().min(0).optional(),
+    rows: z.array(settleRow).min(1).max(30),
+  })
+  .superRefine((b, ctx) => {
+    if ((b.watermark === undefined) !== (b.watermarkCount === undefined)) {
+      ctx.addIssue({ code: 'custom', message: 'watermark and watermarkCount go together' });
+    }
+    let directForward = 0;
+    let directBack = 0;
+    for (const r of b.rows) {
+      if (r.payerId === r.recipientId) {
+        ctx.addIssue({ code: 'custom', message: 'payer and recipient must differ' });
+      }
+      if (r.groupId === null) {
+        if (r.payerId === b.counterpartyId) directForward++;
+        else directBack++;
+      }
+    }
+    if (directForward > 1 || directBack > 1) {
+      ctx.addIssue({ code: 'custom', message: 'at most one direct row per direction' });
+    }
+  });
+
+export type SettlementsBody = z.infer<typeof settlementsBody>;

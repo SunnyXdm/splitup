@@ -10,8 +10,10 @@ import { UserAvatar } from '@/components/common/UserAvatar';
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { ApiError } from '@/lib/api';
 import { formatMoney, parseAmountToCents } from '@/lib/money';
-import { useCreateExpense, useSyncData } from '@/lib/queries';
+import { useCreateExpense, useSettleUp, useSyncData } from '@/lib/queries';
+import { apportionSettle, pairConstituents, settlementWatermark } from '@/lib/settle';
 import type { ExpenseInput, User } from '@/lib/types';
 import { centsToInput, currencySymbol, todayISO } from './money-input';
 
@@ -77,6 +79,7 @@ function SettleBody({
   const { data: sync } = useSyncData();
   const online = useOnline();
   const createExpense = useCreateExpense();
+  const settleUp = useSettleUp();
 
   const [direction, setDirection] = useState<Direction>(initialDirection ?? 'i_paid');
   const [counterpartyId, setCounterpartyId] = useState<number | null>(toUserId ?? null);
@@ -84,6 +87,18 @@ function SettleBody({
     suggestedCents !== undefined ? centsToInput(suggestedCents, currency) : '',
   );
   const [attempted, setAttempted] = useState(false);
+
+  const amountCents = parseAmountToCents(amountRaw, currency);
+
+  // Friend mode: a friend balance is a sum of per-group routed edges plus the
+  // direct residue, so the payment is decomposed into one row per slice —
+  // that's what keeps group pages, friend pages, and totals agreeing.
+  const settleRows = useMemo(() => {
+    if (groupId !== null || !sync || counterpartyId === null) return [];
+    if (amountCents === null || amountCents <= 0) return [];
+    const constituents = pairConstituents(sync, counterpartyId, currency);
+    return apportionSettle(constituents, amountCents, direction, sync.me.id, counterpartyId);
+  }, [groupId, sync, counterpartyId, currency, amountCents, direction]);
 
   const options: User[] = useMemo(() => {
     if (!sync) return [];
@@ -120,13 +135,65 @@ function SettleBody({
 
   const me = sync.me;
   const counterparty = options.find((u) => u.id === counterpartyId) ?? null;
-  const amountCents = parseAmountToCents(amountRaw, currency);
   const amountError = amountCents === null ? 'Enter a valid amount.' : null;
   const counterpartyError = counterparty === null ? 'Choose who you settled with.' : null;
+
+  const celebrate = () => {
+    toast('Payment recorded');
+    // The delight moment: this payment cleared the suggested balance exactly.
+    if (
+      suggestedCents !== undefined &&
+      amountCents === suggestedCents &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      void confetti({
+        particleCount: 90,
+        spread: 70,
+        startVelocity: 38,
+        origin: { y: 0.8 },
+        colors: ['#f37338', '#2e6e4c', '#141413', '#f3f0ee'],
+        disableForReducedMotion: true,
+      });
+    }
+    onOpenChange(false);
+  };
 
   const handleSave = () => {
     setAttempted(true);
     if (amountCents === null || counterparty === null) return;
+
+    if (groupId === null) {
+      // Friend mode: record the apportioned rows atomically.
+      if (settleRows.length === 0) return;
+      settleUp.mutate(
+        {
+          counterpartyId: counterparty.id,
+          currency,
+          date: todayISO(),
+          ...settlementWatermark(sync, counterparty.id),
+          rows: settleRows.map(({ groupId: g, payerId, recipientId, amountCents: cents }) => ({
+            groupId: g,
+            payerId,
+            recipientId,
+            amountCents: cents,
+          })),
+        },
+        {
+          onSuccess: celebrate,
+          onError: (err: Error) => {
+            if (err instanceof ApiError && err.status === 409) {
+              // Balances moved under us; the sheet stays open and the
+              // breakdown recomputes from the refetched data.
+              toast.error('Balances changed — review the updated amounts and try again.');
+            } else {
+              toast.error(err.message);
+            }
+          },
+        },
+      );
+      return;
+    }
+
     const payerId = direction === 'i_paid' ? me.id : counterparty.id;
     const recipientId = direction === 'i_paid' ? counterparty.id : me.id;
     const input: ExpenseInput = {
@@ -144,25 +211,7 @@ function SettleBody({
       ],
     };
     createExpense.mutate(input, {
-      onSuccess: () => {
-        toast('Payment recorded');
-        // The delight moment: this payment cleared the suggested balance exactly.
-        if (
-          suggestedCents !== undefined &&
-          amountCents === suggestedCents &&
-          !window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        ) {
-          void confetti({
-            particleCount: 90,
-            spread: 70,
-            startVelocity: 38,
-            origin: { y: 0.8 },
-            colors: ['#f37338', '#2e6e4c', '#141413', '#f3f0ee'],
-            disableForReducedMotion: true,
-          });
-        }
-        onOpenChange(false);
-      },
+      onSuccess: celebrate,
       onError: (err: Error) => toast.error(err.message),
     });
   };
@@ -248,6 +297,50 @@ function SettleBody({
               </FieldDescription>
             ) : null}
           </Field>
+
+          {/* Friend mode: show where each slice of this payment will be
+              recorded, so group balances visibly settle along with it. */}
+          {counterparty !== null &&
+          settleRows.length > 0 &&
+          !(settleRows.length === 1 && settleRows[0].groupId === null) ? (
+            <Field>
+              <FieldLabel>Recorded as</FieldLabel>
+              <div className="flex flex-col gap-1 rounded-[20px] bg-muted/50 px-4 py-3">
+                {settleRows.map((r, i) => {
+                  const group =
+                    r.groupId !== null ? sync.groups.find((g) => g.id === r.groupId) : null;
+                  const scopeLabel = group ? `${group.emoji} ${group.name}` : 'Direct';
+                  const dirLabel =
+                    r.payerId === me.id ? `You → ${counterparty.name}` : `${counterparty.name} → You`;
+                  return (
+                    <div
+                      key={i}
+                      className={`flex items-baseline justify-between gap-3 text-sm ${
+                        r.counter ? 'text-muted-foreground' : ''
+                      }`}
+                    >
+                      <span className="min-w-0 truncate">
+                        {scopeLabel}
+                        <span className="text-muted-foreground"> · {dirLabel}</span>
+                        {r.counter ? (
+                          <span className="text-muted-foreground"> (offsets)</span>
+                        ) : null}
+                      </span>
+                      <span className="whitespace-nowrap tabular-nums">
+                        {formatMoney(r.amountCents, currency)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {settleRows.some((r) => r.counter) ? (
+                <FieldDescription>
+                  Some balances run in opposite directions across your groups — the offsetting
+                  entries make each group settle while only the net amount changes hands.
+                </FieldDescription>
+              ) : null}
+            </Field>
+          ) : null}
         </FieldGroup>
       </div>
       <SheetFooter className="pt-2 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
@@ -258,10 +351,12 @@ function SettleBody({
         ) : null}
         <Button
           className="h-12 w-full rounded-full"
-          disabled={!online || createExpense.isPending}
+          disabled={!online || createExpense.isPending || settleUp.isPending}
           onClick={handleSave}
         >
-          {createExpense.isPending ? <Spinner data-icon="inline-start" /> : null}
+          {createExpense.isPending || settleUp.isPending ? (
+            <Spinner data-icon="inline-start" />
+          ) : null}
           Record payment
         </Button>
       </SheetFooter>

@@ -193,6 +193,63 @@ export function useCreateExpense() {
   });
 }
 
+export interface SettlementInput {
+  counterpartyId: number;
+  currency: string;
+  /** YYYY-MM-DD */
+  date: string;
+  /** Freshness fingerprint from settlementWatermark(); mismatch → 409. */
+  watermark: string;
+  watermarkCount: number;
+  rows: { groupId: number | null; payerId: number; recipientId: number; amountCents: number }[];
+}
+
+/**
+ * Records every payment row of one friend-balance settle atomically. Rows are
+ * applied optimistically as individual payment expenses; a failure (including
+ * the 409 freshness rejection) rolls all of them back together.
+ */
+export function useSettleUp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SettlementInput) =>
+      api<{ expenses: Expense[] }>('/api/settlements', { method: 'POST', body }),
+    onMutate: async (body) => {
+      await qc.cancelQueries({ queryKey: SYNC_KEY });
+      const prev = qc.getQueryData<SyncData>(SYNC_KEY);
+      if (prev) {
+        let next = prev;
+        for (const row of body.rows) {
+          next = withCreatedExpense(
+            next,
+            {
+              groupId: row.groupId,
+              description: 'Payment',
+              amountCents: row.amountCents,
+              currency: body.currency,
+              date: body.date,
+              category: 'general',
+              notes: null,
+              isPayment: true,
+              shares: [
+                { userId: row.payerId, paidCents: row.amountCents, owedCents: 0 },
+                { userId: row.recipientId, paidCents: 0, owedCents: row.amountCents },
+              ],
+            },
+            prev.me.id,
+          );
+        }
+        qc.setQueryData(SYNC_KEY, next);
+      }
+      return { prev };
+    },
+    onError: (_err, _body, ctx) => {
+      if (ctx?.prev) qc.setQueryData(SYNC_KEY, ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: SYNC_KEY }),
+  });
+}
+
 export function useUpdateExpense() {
   const qc = useQueryClient();
   return useMutation({
