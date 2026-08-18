@@ -1,8 +1,8 @@
 import { toast } from 'sonner';
-import { formatMoney } from './money';
 
-export function reminderText(name: string, cents: number, currency: string, context: string): string {
-  return `Hey ${name}! Friendly reminder from Splitup — you owe me ${formatMoney(cents, currency)} ${context}. Settle up here: ${window.location.origin}`;
+/** `amountText` is preformatted — a single amount or "₹500 + $20" for multi-currency. */
+export function reminderText(name: string, amountText: string, context: string): string {
+  return `Hey ${name}! Friendly reminder from Splitup — you owe me ${amountText} ${context}. Settle up here: ${window.location.origin}`;
 }
 
 /**

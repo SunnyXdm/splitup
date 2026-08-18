@@ -11,6 +11,7 @@ import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/com
 import { Spinner } from '@/components/ui/spinner';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { ApiError } from '@/lib/api';
+import { friendBalance } from '@/lib/balances';
 import { formatMoney, parseAmountToCents } from '@/lib/money';
 import { useCreateExpense, useSettleUp, useSyncData } from '@/lib/queries';
 import { apportionSettle, pairConstituents, settlementWatermark } from '@/lib/settle';
@@ -73,7 +74,7 @@ function SettleBody({
   groupId,
   toUserId,
   suggestedCents,
-  currency,
+  currency: initialCurrency,
   direction: initialDirection,
 }: Omit<SettleUpSheetProps, 'open'>) {
   const { data: sync } = useSyncData();
@@ -83,10 +84,37 @@ function SettleBody({
 
   const [direction, setDirection] = useState<Direction>(initialDirection ?? 'i_paid');
   const [counterpartyId, setCounterpartyId] = useState<number | null>(toUserId ?? null);
+  const [currency, setCurrency] = useState(initialCurrency);
   const [amountRaw, setAmountRaw] = useState(
-    suggestedCents !== undefined ? centsToInput(suggestedCents, currency) : '',
+    suggestedCents !== undefined ? centsToInput(suggestedCents, initialCurrency) : '',
   );
   const [attempted, setAttempted] = useState(false);
+
+  // Friend mode can hold balances in several currencies; each is settled in
+  // its own run of the sheet, so offer a switcher when more than one exists.
+  const balanceEntries = useMemo(
+    () =>
+      groupId === null && sync && counterpartyId !== null
+        ? friendBalance(sync, counterpartyId).filter((b) => b.netCents !== 0)
+        : [],
+    [groupId, sync, counterpartyId],
+  );
+  const currencyOptions = useMemo(() => {
+    const set = new Set<string>(balanceEntries.map((b) => b.currency));
+    set.add(currency);
+    return [...set].sort();
+  }, [balanceEntries, currency]);
+
+  const switchCurrency = (next: string) => {
+    setCurrency(next);
+    const entry = balanceEntries.find((b) => b.currency === next);
+    if (entry) {
+      setAmountRaw(centsToInput(Math.abs(entry.netCents), next));
+      setDirection(entry.netCents > 0 ? 'they_paid' : 'i_paid');
+    } else {
+      setAmountRaw('');
+    }
+  };
 
   const amountCents = parseAmountToCents(amountRaw, currency);
 
@@ -117,7 +145,10 @@ function SettleBody({
   }, [sync, groupId, counterpartyId]);
 
   useEffect(() => {
-    if (counterpartyId === null && options.length > 0) setCounterpartyId(options[0].id);
+    // Auto-select only an unambiguous counterparty; guessing (e.g. the first
+    // member by join order) invites recording a payment against the wrong
+    // person — the user must choose explicitly.
+    if (counterpartyId === null && options.length === 1) setCounterpartyId(options[0].id);
   }, [counterpartyId, options]);
 
   if (!sync) {
@@ -269,6 +300,31 @@ function SettleBody({
               <FieldDescription className="text-destructive">{counterpartyError}</FieldDescription>
             ) : null}
           </Field>
+
+          {groupId === null && currencyOptions.length > 1 ? (
+            <Field>
+              <FieldLabel htmlFor="settle-currency">Currency</FieldLabel>
+              <PickerSelect
+                id="settle-currency"
+                title="Currency"
+                value={currency}
+                onValueChange={switchCurrency}
+                options={currencyOptions.map((code) => {
+                  const entry = balanceEntries.find((b) => b.currency === code);
+                  return {
+                    value: code,
+                    label: code,
+                    sublabel: entry
+                      ? `${entry.netCents > 0 ? 'owes you' : 'you owe'} ${formatMoney(Math.abs(entry.netCents), code)}`
+                      : undefined,
+                  };
+                })}
+              />
+              <FieldDescription>
+                Balances in different currencies settle separately.
+              </FieldDescription>
+            </Field>
+          ) : null}
 
           <Field data-invalid={attempted && amountError !== null}>
             <FieldLabel htmlFor="settle-amount">Amount</FieldLabel>

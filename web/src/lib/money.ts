@@ -98,17 +98,30 @@ export function parseAmountToCents(input: string, currency: string): number | nu
     cents = Math.round(value * 10 ** digits + 1e-7);
   } else {
     // Plain amounts parse with string/integer math only — no float can appear.
-    const match = /^(\d+)(?:\.(\d*))?$/.exec(cleaned);
-    if (!match) return null;
-    const whole = match[1];
-    const frac = match[2] ?? '';
-    if (whole.length > 12) return null;
-    const fracPadded = frac.padEnd(digits + 1, '0');
-    const scaled = Number(whole) * 10 ** digits + (digits > 0 ? Number(fracPadded.slice(0, digits)) : 0);
-    const roundUp = Number(fracPadded[digits] ?? '0') >= 5 ? 1 : 0;
-    cents = scaled + roundUp;
+    const parsed = parseDecimalToMinor(cleaned, digits);
+    if (parsed === null) return null;
+    cents = parsed;
   }
   return cents >= 1 && cents <= MAX_CENTS ? cents : null;
+}
+
+/**
+ * Exact plain-decimal → minor units with half-up rounding; pure string/integer
+ * math so "1.005" is 101 in a 2-digit currency (floats say 100). Accepts
+ * ".5"; rejects anything else non-numeric. No range clamping here.
+ */
+export function parseDecimalToMinor(cleaned: string, digits: number): number | null {
+  const match = /^(\d*)(?:\.(\d*))?$/.exec(cleaned);
+  if (!match) return null;
+  const whole = match[1];
+  const frac = match[2] ?? '';
+  if (whole === '' && frac === '') return null;
+  if (whole.length > 12) return null;
+  const fracPadded = frac.padEnd(digits + 1, '0');
+  const scaled =
+    Number(whole || '0') * 10 ** digits + (digits > 0 ? Number(fracPadded.slice(0, digits)) : 0);
+  const roundUp = Number(fracPadded[digits] ?? '0') >= 5 ? 1 : 0;
+  return scaled + roundUp;
 }
 
 export interface OwedSplit {

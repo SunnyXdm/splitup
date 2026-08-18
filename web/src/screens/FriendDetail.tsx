@@ -15,6 +15,7 @@ import { MoneyText } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import SettleUpSheet from '@/components/expense/SettleUpSheet';
+import { formatMoney } from '@/lib/money';
 import { reminderText, sendReminder } from '@/lib/remind';
 import ExpenseHistory from '@/components/group/ExpenseHistory';
 import { useOnline } from '@/components/layout/OfflineBanner';
@@ -112,13 +113,20 @@ export default function FriendDetail() {
           >
             Settle up
           </Button>
-          {primary && primary.netCents > 0 ? (
+          {entries.some((b) => b.netCents > 0) ? (
             <Button
               variant="outline"
               className="h-11 rounded-full px-5"
               onClick={() =>
                 void sendReminder(
-                  reminderText(friend.name, primary.netCents, primary.currency, 'overall'),
+                  reminderText(
+                    friend.name,
+                    entries
+                      .filter((b) => b.netCents > 0)
+                      .map((b) => formatMoney(b.netCents, b.currency))
+                      .join(' + '),
+                    'overall',
+                  ),
                 )
               }
             >

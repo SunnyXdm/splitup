@@ -124,8 +124,12 @@ function FormFields({
     if (friendId !== undefined) return friendId;
     return sync.friendIds[0] ?? null;
   })();
+  // Editing keeps departed members' shares in play (union with the current
+  // roster) — silently dropping them would redistribute their portion.
   const initialParticipantIds = group
-    ? group.memberIds
+    ? expense
+      ? [...new Set([...group.memberIds, ...expense.shares.map((s) => s.userId)])]
+      : group.memberIds
     : initialFriendId !== null
       ? [me.id, initialFriendId]
       : [me.id];
@@ -154,10 +158,15 @@ function FormFields({
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const participants: User[] = useMemo(() => {
-    if (group) return group.memberIds.map((id) => userById(sync, id));
+    if (group) {
+      const ids = expense
+        ? [...new Set([...group.memberIds, ...expense.shares.map((s) => s.userId)])]
+        : group.memberIds;
+      return ids.map((id) => userById(sync, id));
+    }
     const ids = activeFriendId !== null ? [me.id, activeFriendId] : [me.id];
     return ids.map((id) => userById(sync, id));
-  }, [sync, group, me.id, activeFriendId]);
+  }, [sync, group, expense, me.id, activeFriendId]);
 
   const friendOptions: User[] = useMemo(() => {
     const ids = new Set<number>(sync.friendIds);

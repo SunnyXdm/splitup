@@ -139,6 +139,10 @@ describe('parseAmountToCents', () => {
     expect(parseAmountToCents('0.01', 'USD')).toBe(1);
     expect(parseAmountToCents('1,250.50', 'USD')).toBe(125050);
     expect(parseAmountToCents(' 12.5 ', 'USD')).toBe(1250);
+    expect(parseAmountToCents('.5', 'USD')).toBe(50);
+    // Half-cent inputs round half-up via exact string math, immune to floats
+    // (1.005 as a double is 1.00499…95).
+    expect(parseAmountToCents('1.005', 'USD')).toBe(101);
   });
 
   it('rejects garbage', () => {

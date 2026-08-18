@@ -353,8 +353,7 @@ export default function GroupDetail() {
                               void sendReminder(
                                 reminderText(
                                   nameOf(t.fromUserId),
-                                  t.cents,
-                                  t.currency,
+                                  formatMoney(t.cents, t.currency),
                                   `in "${group.name}"`,
                                 ),
                               )
@@ -391,7 +390,24 @@ export default function GroupDetail() {
                   className="h-11 rounded-full"
                   disabled={!online}
                   onClick={() => {
-                    setSettlePrefill({ currency: group.currency });
+                    // Prefill from my largest suggested settlement so direction
+                    // and counterparty are never silently guessed wrong.
+                    const mine = transfers.filter(
+                      (t) => t.fromUserId === meId || t.toUserId === meId,
+                    );
+                    const best = mine.length
+                      ? mine.reduce((a, b) => (b.cents > a.cents ? b : a))
+                      : null;
+                    setSettlePrefill(
+                      best
+                        ? {
+                            toUserId: best.toUserId === meId ? best.fromUserId : best.toUserId,
+                            suggestedCents: best.cents,
+                            currency: best.currency,
+                            direction: best.toUserId === meId ? 'they_paid' : 'i_paid',
+                          }
+                        : { currency: group.currency },
+                    );
                     setSettleOpen(true);
                   }}
                 >

@@ -8,8 +8,13 @@ import type { ExpenseInput, SyncData } from './types';
 
 const nowIso = () => new Date().toISOString();
 
+let tempSeq = 0;
+
 export function tempExpenseId(): number {
-  return -Math.floor(Date.now() % 1_000_000_000) - Math.floor(Math.random() * 1000);
+  // ms-timestamp × 1000 + a monotonic counter: unique within a session even
+  // for same-millisecond bursts, and reload-safe via the time component.
+  tempSeq = (tempSeq + 1) % 1000;
+  return -(Math.floor(Date.now() % 1_000_000_000) * 1000 + tempSeq);
 }
 
 export function withCreatedExpense(sync: SyncData, input: ExpenseInput, meId: number): SyncData {

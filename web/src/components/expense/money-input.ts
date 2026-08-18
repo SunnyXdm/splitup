@@ -1,4 +1,4 @@
-import { MAX_CENTS, currencyDigits } from '@/lib/money';
+import { MAX_CENTS, currencyDigits, parseDecimalToMinor } from '@/lib/money';
 
 const symbolCache = new Map<string, string>();
 
@@ -34,10 +34,10 @@ export function centsToInput(cents: number, currency: string): string {
 export function parseShareInput(raw: string, currency: string): number | null {
   const cleaned = raw.replace(/[,\s]/g, '');
   if (cleaned === '') return 0;
-  if (!/^\d+(\.\d*)?$/.test(cleaned)) return null;
-  const value = Number(cleaned);
-  if (!Number.isFinite(value)) return null;
-  const cents = Math.round(value * 10 ** currencyDigits(currency));
+  // Same exact string/integer parsing as the total field, so identical text
+  // can never round differently between the two ("1.005" was 101 vs 100).
+  const cents = parseDecimalToMinor(cleaned, currencyDigits(currency));
+  if (cents === null) return null;
   return cents >= 0 && cents <= MAX_CENTS ? cents : null;
 }
 
@@ -45,10 +45,8 @@ export function parseShareInput(raw: string, currency: string): number | null {
 export function parsePercentInput(raw: string): number | null {
   const cleaned = raw.replace(/[,\s]/g, '');
   if (cleaned === '') return 0;
-  if (!/^\d+(\.\d*)?$/.test(cleaned)) return null;
-  const value = Number(cleaned);
-  if (!Number.isFinite(value)) return null;
-  const bp = Math.round(value * 100);
+  const bp = parseDecimalToMinor(cleaned, 2);
+  if (bp === null) return null;
   return bp >= 0 && bp <= 10_000 ? bp : null;
 }
 

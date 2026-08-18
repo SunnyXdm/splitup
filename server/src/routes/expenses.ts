@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { requireAuth, type AppEnv } from '../auth';
 import { db, nowIso } from '../db';
 import { expenseBody, idParam } from '../validate';
@@ -47,7 +48,7 @@ app.post('/', async (c) => {
     insertShares(id, body.shares);
     const shareUserIds = body.shares.map((s) => s.userId);
     const summary = body.isPayment
-      ? paymentSummary(body.shares, body.groupId)
+      ? paymentSummary(body.shares, body.groupId, body.currency)
       : expenseSummary('added', me, description, body.groupId, shareUserIds);
     recordActivity(me.id, body.isPayment ? 'payment_added' : 'expense_added', body.groupId, id, summary);
     return expenseWire(id);
@@ -58,9 +59,20 @@ app.post('/', async (c) => {
 app.patch('/:id', async (c) => {
   const me = c.get('user');
   const id = idParam.parse(c.req.param('id'));
-  editableExpenseOr404(me, id);
+  const existing = editableExpenseOr404(me, id);
   const body = expenseBody.parse(await readJson(c));
-  checkExpenseInput(me, body);
+  // An edit may not move an expense between scopes or turn it into/out of a
+  // payment: authorization and settled states are scoped to where it lives.
+  if (body.groupId !== existing.group_id) {
+    throw new HTTPException(400, { message: 'an expense cannot move between groups' });
+  }
+  if (body.isPayment !== (existing.is_payment === 1)) {
+    throw new HTTPException(400, { message: 'an expense cannot become a payment' });
+  }
+  // Participants who have since left the group stay editable (grandfathered);
+  // new participants must be current members.
+  const grandfathered = new Set(sharesOf(id).map((s) => s.user_id));
+  checkExpenseInput(me, body, grandfathered);
   const description = body.isPayment ? 'Payment' : body.description;
   const now = nowIso();
   const expense = db.transaction(() => {
@@ -83,13 +95,10 @@ app.patch('/:id', async (c) => {
     db.prepare('DELETE FROM expense_shares WHERE expense_id = ?').run(id);
     insertShares(id, body.shares);
     const shareUserIds = body.shares.map((s) => s.userId);
-    recordActivity(
-      me.id,
-      'expense_updated',
-      body.groupId,
-      id,
-      expenseSummary('updated', me, description, body.groupId, shareUserIds),
-    );
+    const summary = body.isPayment
+      ? `${me.name} updated a payment: ${paymentSummary(body.shares, body.groupId, body.currency)}`
+      : expenseSummary('updated', me, description, body.groupId, shareUserIds);
+    recordActivity(me.id, 'expense_updated', body.groupId, id, summary);
     return expenseWire(id);
   })();
   return c.json(expense);

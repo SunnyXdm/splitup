@@ -35,7 +35,8 @@ app.use(async (c, next) => {
   }
 });
 app.use('/api/*', csrfProtect);
-app.use('/api/auth/*', rateLimit(20));
+// Auth runs pre-session: key by IP so attacker-chosen cookies can't mint buckets.
+app.use('/api/auth/*', rateLimit(20, 'ip'));
 app.use('/api/*', rateLimit(300));
 app.use('/api/*', bodyLimit({ maxSize: 64 * 1024 }));
 

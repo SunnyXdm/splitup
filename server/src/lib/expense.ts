@@ -99,9 +99,15 @@ export function editableExpenseOr404(me: UserRow, id: number): ExpenseRow {
 /**
  * Semantic checks beyond zod for an expense body. Returns the group (null for
  * non-group). 404 when the caller isn't a member of the target group; 400 for
- * currency/participant violations.
+ * currency/participant violations. `grandfathered` (edits only) lets an
+ * expense keep participants who have since left the group — without it, an
+ * old expense containing a departed member could never be saved again.
  */
-export function checkExpenseInput(me: UserRow, body: ExpenseBody): GroupRow | null {
+export function checkExpenseInput(
+  me: UserRow,
+  body: ExpenseBody,
+  grandfathered?: Set<number>,
+): GroupRow | null {
   if (body.groupId !== null) {
     const group = memberGroupOr404(body.groupId, me.id);
     if (body.currency !== group.currency) {
@@ -109,7 +115,7 @@ export function checkExpenseInput(me: UserRow, body: ExpenseBody): GroupRow | nu
     }
     const members = new Set(groupMemberIds(group.id));
     for (const s of body.shares) {
-      if (!members.has(s.userId)) {
+      if (!members.has(s.userId) && !grandfathered?.has(s.userId)) {
         throw new HTTPException(400, { message: 'every share user must be a group member' });
       }
     }
@@ -160,15 +166,36 @@ export function expenseSummary(
   return `${actor.name} ${verb} '${description}'${expenseContext(groupId, shareUserIds, actor.id)}`;
 }
 
+const amountFormatters = new Map<string, Intl.NumberFormat>();
+
+/** "₹605.84"-style amount; falls back to "605.84 XXX" for unknown codes. */
+export function formatPaymentAmount(cents: number, currency: string): string {
+  let nf = amountFormatters.get(currency);
+  if (nf === undefined) {
+    try {
+      nf = new Intl.NumberFormat('en', { style: 'currency', currency });
+    } catch {
+      return `${(cents / 100).toFixed(2)} ${currency}`;
+    }
+    amountFormatters.set(currency, nf);
+  }
+  // Intl knows the currency's minor-unit digits; feed it major units.
+  const digits = nf.resolvedOptions().maximumFractionDigits ?? 2;
+  return nf.format(cents / 10 ** digits);
+}
+
 export function paymentSummary(
   shares: { userId: number; paidCents: number; owedCents: number }[],
   groupId: number | null,
+  currency?: string,
 ): string {
   const payer = shares.find((s) => s.paidCents > 0);
   const recipient = shares.find((s) => s.owedCents > 0);
+  const amount =
+    payer && currency ? ` (${formatPaymentAmount(payer.paidCents, currency)})` : '';
   const base = `${payer ? userName(payer.userId) : 'Someone'} settled up with ${
     recipient ? userName(recipient.userId) : 'someone'
-  }`;
+  }${amount}`;
   if (groupId === null) return base;
   const name = groupName(groupId);
   return name ? `${base} in ${name}` : base;

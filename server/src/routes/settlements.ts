@@ -128,7 +128,13 @@ app.post('/', async (c) => {
         .run(row.groupId, row.amountCents, body.currency, body.date, me.id, now, now);
       const id = Number(info.lastInsertRowid);
       insertShares(id, shares);
-      recordActivity(me.id, 'payment_added', row.groupId, id, paymentSummary(shares, row.groupId));
+      recordActivity(
+        me.id,
+        'payment_added',
+        row.groupId,
+        id,
+        paymentSummary(shares, row.groupId, body.currency),
+      );
       created.push(expenseWire(id));
     }
     return created;

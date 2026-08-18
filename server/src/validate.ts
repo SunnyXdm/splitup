@@ -83,6 +83,18 @@ export const expenseBody = z
     if (e.groupId === null && e.shares.length !== 2) {
       ctx.addIssue({ code: 'custom', message: 'non-group expenses need exactly 2 people' });
     }
+    // Payments are strictly one payer → one recipient; every display and
+    // summary assumes it, and self-payments are meaningless no-ops.
+    if (
+      e.isPayment &&
+      !(
+        e.shares.length === 2 &&
+        e.shares.some((s) => s.paidCents === e.amountCents && s.owedCents === 0) &&
+        e.shares.some((s) => s.paidCents === 0 && s.owedCents === e.amountCents)
+      )
+    ) {
+      ctx.addIssue({ code: 'custom', message: 'a payment needs exactly one payer and one recipient' });
+    }
   });
 
 export type ExpenseBody = z.infer<typeof expenseBody>;
@@ -109,7 +121,7 @@ export const settlementsBody = z
      */
     watermark: z.string().max(40).optional(),
     watermarkCount: z.number().int().min(0).optional(),
-    rows: z.array(settleRow).min(1).max(30),
+    rows: z.array(settleRow).min(1).max(64),
   })
   .superRefine((b, ctx) => {
     if ((b.watermark === undefined) !== (b.watermarkCount === undefined)) {
