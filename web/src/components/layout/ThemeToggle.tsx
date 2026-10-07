@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import { useTheme } from '@/components/theme-provider';
 
@@ -9,9 +10,27 @@ export default function ThemeToggle() {
   const { resolved, toggleTheme } = useTheme();
   const dark = resolved !== 'light';
   const Icon = dark ? Sun : Moon;
+  const button = useRef<HTMLButtonElement>(null);
+
+  // While a theme sweep runs, the browser hit-tests every tap to <html> (the
+  // transition overlay hosts the snapshots), so the button never sees a second
+  // tap until the sweep ends. Route taps that land on the button's box to it.
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (e.target !== document.documentElement || !button.current) return;
+      const r = button.current.getBoundingClientRect();
+      if (r.width === 0) return; // hidden copy (mobile vs desktop header)
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+        toggleTheme();
+      }
+    };
+    document.addEventListener('click', onClick);
+    return () => document.removeEventListener('click', onClick);
+  }, [toggleTheme]);
 
   return (
     <button
+      ref={button}
       type="button"
       aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
       onClick={toggleTheme}

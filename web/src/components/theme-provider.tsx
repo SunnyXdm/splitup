@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -92,6 +93,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // (toggle icon, Account picker), not just the <html> classes.
   const system = useSyncExternalStore(subscribeSystemTheme, systemTheme);
   const resolved = resolveTheme(theme, darkVariant, system);
+  // The sweep in flight, so a tap mid-animation can cut it short.
+  const transition = useRef<ViewTransition | null>(null);
+  // The theme the latest tap asked for — ahead of `resolved` while a sweep's
+  // update callback is still pending, so back-to-back taps alternate correctly.
+  const target = useRef<'light' | 'dark' | 'amoled' | null>(null);
 
   useEffect(() => {
     applyClasses(resolved);
@@ -101,6 +107,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     (nextTheme: Theme, nextVariant: DarkVariant) => {
       localStorage.setItem(STORAGE_KEY, nextTheme);
       localStorage.setItem(VARIANT_KEY, nextVariant);
+      target.current = resolveTheme(nextTheme, nextVariant);
       const apply = () => {
         // flushSync so the new theme classes are on <html> before the view
         // transition snapshots the "new" state.
@@ -110,15 +117,29 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         });
         applyClasses(resolveTheme(nextTheme, nextVariant));
       };
+      // Mid-sweep, `resolved` may lag the tap, so only skip the animation for
+      // a no-op change when nothing is in flight.
+      const unchanged = !transition.current && resolveTheme(nextTheme, nextVariant) === resolved;
       if (
-        resolveTheme(nextTheme, nextVariant) === resolved ||
+        unchanged ||
         !document.startViewTransition ||
         window.matchMedia(REDUCED_MOTION_QUERY).matches
       ) {
         apply();
+        target.current = null;
         return;
       }
-      document.startViewTransition(apply);
+      // A rapid second tap: finish the running sweep instantly, then sweep
+      // from there to the new theme — no waiting for the first to settle.
+      transition.current?.skipTransition();
+      const current = document.startViewTransition(apply);
+      transition.current = current;
+      void current.finished.finally(() => {
+        if (transition.current === current) {
+          transition.current = null;
+          target.current = null;
+        }
+      });
     },
     [resolved],
   );
@@ -131,7 +152,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 
   const toggleTheme = useCallback(() => {
-    commit(resolved === 'light' ? darkVariant : 'light', darkVariant);
+    const showing = target.current ?? resolved;
+    commit(showing === 'light' ? darkVariant : 'light', darkVariant);
   }, [commit, resolved, darkVariant]);
 
   return (
