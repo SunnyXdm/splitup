@@ -93,11 +93,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // (toggle icon, Account picker), not just the <html> classes.
   const system = useSyncExternalStore(subscribeSystemTheme, systemTheme);
   const resolved = resolveTheme(theme, darkVariant, system);
-  // The sweep in flight, so a tap mid-animation can cut it short.
-  const transition = useRef<ViewTransition | null>(null);
-  // The theme the latest tap asked for — ahead of `resolved` while a sweep's
-  // update callback is still pending, so back-to-back taps alternate correctly.
-  const target = useRef<'light' | 'dark' | 'amoled' | null>(null);
+  // The sweep in flight. A tap mid-sweep reverses it rather than starting a
+  // new one, so rapid taps rewind smoothly instead of snapping.
+  const sweep = useRef<{
+    transition: ViewTransition;
+    /** What the page shows once the sweep settles in its current direction. */
+    settlesOn: 'light' | 'dark' | 'amoled';
+    /** Theme/variant to restore if the sweep ends rewound. */
+    previous: { theme: Theme; variant: DarkVariant; resolved: 'light' | 'dark' | 'amoled' };
+    next: { resolved: 'light' | 'dark' | 'amoled' };
+  } | null>(null);
 
   useEffect(() => {
     applyClasses(resolved);
@@ -107,7 +112,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     (nextTheme: Theme, nextVariant: DarkVariant) => {
       localStorage.setItem(STORAGE_KEY, nextTheme);
       localStorage.setItem(VARIANT_KEY, nextVariant);
-      target.current = resolveTheme(nextTheme, nextVariant);
+      const nextResolved = resolveTheme(nextTheme, nextVariant);
       const apply = () => {
         // flushSync so the new theme classes are on <html> before the view
         // transition snapshots the "new" state.
@@ -115,33 +120,77 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           setThemeState(nextTheme);
           setVariantState(nextVariant);
         });
-        applyClasses(resolveTheme(nextTheme, nextVariant));
+        applyClasses(nextResolved);
       };
-      // Mid-sweep, `resolved` may lag the tap, so only skip the animation for
-      // a no-op change when nothing is in flight.
-      const unchanged = !transition.current && resolveTheme(nextTheme, nextVariant) === resolved;
+
+      const running = sweep.current;
+      if (running) {
+        // Mid-sweep: rewind (or re-advance) the sweep in place when the tap
+        // asks for the side it came from (or is heading to).
+        const sweepAnims = document
+          .getAnimations()
+          .filter((a) =>
+            (a.effect as KeyframeEffect | null)?.pseudoElement?.startsWith('::view-transition'),
+          );
+        const towardPrevious = nextResolved === running.previous.resolved;
+        const towardNext = nextResolved === running.next.resolved;
+        if (sweepAnims.length > 0 && (towardPrevious || towardNext)) {
+          if (running.settlesOn !== nextResolved) {
+            for (const a of sweepAnims) a.reverse();
+            running.settlesOn = nextResolved;
+          }
+          return;
+        }
+        running.transition.skipTransition();
+      }
+
       if (
-        unchanged ||
+        nextResolved === resolved ||
         !document.startViewTransition ||
         window.matchMedia(REDUCED_MOTION_QUERY).matches
       ) {
         apply();
-        target.current = null;
         return;
       }
-      // A rapid second tap: finish the running sweep instantly, then sweep
-      // from there to the new theme — no waiting for the first to settle.
-      transition.current?.skipTransition();
-      const current = document.startViewTransition(apply);
-      transition.current = current;
-      void current.finished.finally(() => {
-        if (transition.current === current) {
-          transition.current = null;
-          target.current = null;
-        }
+
+      const transition = document.startViewTransition(apply);
+      const state = {
+        transition,
+        settlesOn: nextResolved,
+        previous: { theme, variant: darkVariant, resolved },
+        next: { resolved: nextResolved },
+      };
+      sweep.current = state;
+      void transition.ready
+        .then(() => {
+          // The expanding circle drives the end of the sweep. If it ends
+          // rewound, swap the DOM back while the overlay still shows the old
+          // snapshot, so removing the overlay reveals no flash.
+          const expand = document
+            .getAnimations()
+            .find(
+              (a) =>
+                (a.effect as KeyframeEffect | null)?.pseudoElement === '::view-transition-new(root)',
+            );
+          expand?.addEventListener('finish', () => {
+            if (state.settlesOn !== state.next.resolved) {
+              const { theme: t, variant: v } = state.previous;
+              localStorage.setItem(STORAGE_KEY, t);
+              localStorage.setItem(VARIANT_KEY, v);
+              flushSync(() => {
+                setThemeState(t);
+                setVariantState(v);
+              });
+              applyClasses(state.previous.resolved);
+            }
+          });
+        })
+        .catch(() => {});
+      void transition.finished.finally(() => {
+        if (sweep.current === state) sweep.current = null;
       });
     },
-    [resolved],
+    [resolved, theme, darkVariant],
   );
 
   const setTheme = useCallback(
@@ -152,7 +201,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 
   const toggleTheme = useCallback(() => {
-    const showing = target.current ?? resolved;
+    // Mid-sweep, flip relative to where the sweep is heading, not the DOM.
+    const showing = sweep.current?.settlesOn ?? resolved;
     commit(showing === 'light' ? darkVariant : 'light', darkVariant);
   }, [commit, resolved, darkVariant]);
 
