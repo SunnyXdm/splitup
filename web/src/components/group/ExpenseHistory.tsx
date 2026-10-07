@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useState, type ReactNode } from 'react';
 import { useLocation } from 'react-router';
 import { HandCoins } from 'lucide-react';
 import { toast } from 'sonner';
@@ -21,27 +21,39 @@ import { errorMessage } from '@/lib/api';
 import { formatMoney } from '@/lib/money';
 import { displayName, type NameCase } from '@/lib/names';
 import { useDeleteExpense } from '@/lib/queries';
-import { batchScopeHint, historyEntries, paymentRowAction } from '@/lib/settlement-batches';
+import {
+  acrossLabel,
+  batchInContext,
+  expenseRowFact,
+  payersLabel,
+  type HistoryScope,
+  type RowFact,
+} from '@/lib/history-rows';
+import { historyEntries, paymentRowAction } from '@/lib/settlement-batches';
 import type { HistoryEntry } from '@/lib/settlement-batches';
 import type { Expense, SettlementBatch, SyncData } from '@/lib/types';
 import { EntranceScope } from '@/components/common/Entrance';
 import { prefersReducedMotion, useEnterItem } from '@/lib/motion';
 import { stableRowId, wasJustDeleted } from '@/lib/row-motion';
 import { cn } from '@/lib/utils';
+import { HistoryScopeContext } from './history-scope';
 
 interface ExpenseHistoryProps {
   sync: SyncData;
   /** Already-filtered expenses; the component sorts and groups them by month. */
   expenses: Expense[];
   /**
-   * Row tap on a regular expense. Payments of a settle-up open its receipt
+   * Row tap on a regular expense (screens open ExpenseDetailSheet). Payments of a settle-up open its receipt
    * (inert if the batch isn't synced yet); legacy payments (no batch) open a
    * delete confirmation.
    */
   onSelect?: (expense: Expense) => void;
   /** Tag each row with its group name (or "Direct") — used on FriendDetail. */
   showGroupTag?: boolean;
-  /** Fold every row of one settle-up into a single entry — used on FriendDetail. */
+  /**
+   * Fold every row of one settle-up into a single entry (default). Its amount
+   * reads in context: the cash once, or only the part applied in this list.
+   */
   collapseBatches?: boolean;
 }
 
@@ -51,9 +63,10 @@ export default function ExpenseHistory({
   expenses,
   onSelect,
   showGroupTag = false,
-  collapseBatches = false,
+  collapseBatches = true,
 }: ExpenseHistoryProps) {
   const meId = sync.me.id;
+  const scope = useContext(HistoryScopeContext);
   const online = useOnline();
   const deleteExpense = useDeleteExpense();
   const [paymentToDelete, setPaymentToDelete] = useState<Expense | null>(null);
@@ -61,6 +74,14 @@ export default function ExpenseHistory({
   const [receipt, setReceipt] = useState<SettlementBatch | null>(null);
   const [receiptOpen, setReceiptOpen] = useState(false);
   const batchesById = new Map((sync.settlementBatches ?? []).map((b) => [b.id, b]));
+  // Every live row of each settle-up, to tell a whole payment from a part.
+  const rowsByBatch = new Map<number, Expense[]>();
+  for (const e of sync.expenses) {
+    if (e.settlementBatchId == null) continue;
+    const list = rowsByBatch.get(e.settlementBatchId);
+    if (list) list.push(e);
+    else rowsByBatch.set(e.settlementBatchId, [e]);
+  }
   const openReceipt = (batch: SettlementBatch) => {
     setReceipt(batch);
     setReceiptOpen(true);
@@ -112,8 +133,9 @@ export default function ExpenseHistory({
         <BatchRow
           batch={entry.batch}
           rows={entry.rows}
+          allRows={rowsByBatch.get(entry.batch.id) ?? entry.rows}
           nameOf={nameOf}
-          tag={entry.rows.length === 1 ? tagOf(entry.rows[0].groupId) : undefined}
+          tagOf={tagOf}
           onOpen={() => openReceipt(entry.batch)}
         />
       );
@@ -140,6 +162,7 @@ export default function ExpenseHistory({
       <ExpenseRow
         expense={e}
         meId={meId}
+        scope={scope}
         nameOf={nameOf}
         tag={tagOf(e.groupId)}
         onSelect={onSelect}
@@ -153,7 +176,7 @@ export default function ExpenseHistory({
         {months.map(({ key, label, items }, sectionIndex) => (
           <MonthSection key={key} index={sectionIndex}>
             <h2 className="px-1 text-sm font-medium text-muted-foreground">{label}</h2>
-            <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
+            <div className="flex flex-col divide-y divide-border/60 rounded-card bg-card px-4">
               {items.map((entry) => {
                 const row = renderRow(entry);
                 if (entry.exiting) {
@@ -299,10 +322,59 @@ function RowMotion({ entry, children }: { entry: HistoryEntry; children: ReactNo
   return <div className={fresh ? 'motion-row-new' : undefined}>{children}</div>;
 }
 
-function Tag({ tag }: { tag: string }) {
+const rowClass =
+  'flex min-h-16 w-full items-start gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring';
+
+function RowIcon({ children }: { children: ReactNode }) {
   return (
-    <span className="shrink-0 rounded-full bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
-      {tag}
+    <span className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-full bg-background text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
+/** "Oct 8 · Flat 4B · You paid ₹1,864" — the meta line, parts joined with dots. */
+function Meta({ parts }: { parts: (string | null | undefined)[] }) {
+  return (
+    <span className="text-[13px] leading-5 text-muted-foreground">
+      {parts.filter(Boolean).join(' · ')}
+    </span>
+  );
+}
+
+/** Right-hand label over an amount ("you lent", "your share"). */
+function FactLabel({ children }: { children: ReactNode }) {
+  return <span className="text-xs whitespace-nowrap text-muted-foreground">{children}</span>;
+}
+
+function RightFact({ fact, currency }: { fact: RowFact; currency: string }) {
+  if (fact.kind === 'none' || fact.kind === 'even') {
+    return (
+      <span className="mt-0.5 max-w-24 shrink-0 text-right text-xs text-muted-foreground">
+        {fact.kind === 'none' ? 'not involved' : 'no balance change'}
+      </span>
+    );
+  }
+  return (
+    <span className="flex shrink-0 flex-col items-end gap-0.5">
+      {fact.kind === 'share' ? (
+        <>
+          <FactLabel>your share</FactLabel>
+          <span className="text-sm whitespace-nowrap tabular-nums">
+            {formatMoney(fact.cents, currency)}
+          </span>
+        </>
+      ) : (
+        <>
+          <FactLabel>{fact.cents > 0 ? 'you lent' : 'you borrowed'}</FactLabel>
+          <MoneyText
+            signed
+            cents={fact.cents}
+            currency={currency}
+            className="text-sm font-medium whitespace-nowrap"
+          />
+        </>
+      )}
     </span>
   );
 }
@@ -310,105 +382,99 @@ function Tag({ tag }: { tag: string }) {
 function ExpenseRow({
   expense: e,
   meId,
+  scope,
   nameOf,
   tag,
   onSelect,
 }: {
   expense: Expense;
   meId: number;
+  scope: HistoryScope;
   nameOf: (id: number, nameCase?: NameCase) => string;
   tag?: string;
   onSelect?: (expense: Expense) => void;
 }) {
-  const payers = e.shares.filter((s) => s.paidCents > 0);
-  const paidLine =
-    payers.length === 1
-      ? `${nameOf(payers[0].userId)} paid ${formatMoney(e.amountCents, e.currency)}`
-      : `${payers.length} people paid ${formatMoney(e.amountCents, e.currency)}`;
-  const mine = e.shares.find((s) => s.userId === meId);
-  const net = mine ? mine.paidCents - mine.owedCents : 0;
-  // Negative id = optimistic row still being saved — not editable yet.
+  const fact = expenseRowFact(e, meId, scope);
+  // Negative id = optimistic row still being saved — not openable yet.
   const clickable = onSelect !== undefined && e.id > 0;
   return (
     <button
       type="button"
       onClick={clickable ? () => onSelect(e) : undefined}
       disabled={!clickable}
-      className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+      className={rowClass}
     >
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-background">
+      <RowIcon>
         <CategoryIcon category={e.category} className="size-4 text-foreground/70" />
-      </span>
+      </RowIcon>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="flex items-center gap-2">
-          <span className="truncate font-medium">{e.description}</span>
-          {tag ? <Tag tag={tag} /> : null}
-        </span>
-        <span className="truncate text-xs text-muted-foreground">
-          {formatDateSafe(e.date, 'MMM d', '—')} · {paidLine}
-        </span>
+        <span className="line-clamp-2 font-medium break-words">{e.description}</span>
+        <Meta
+          parts={[
+            formatDateSafe(e.date, 'MMM d', '—'),
+            tag,
+            `${payersLabel(e, (id) => nameOf(id))} ${formatMoney(e.amountCents, e.currency)}`,
+          ]}
+        />
       </span>
-      <span className="flex shrink-0 flex-col items-end gap-0.5">
-        {net === 0 ? (
-          <span className="text-xs text-muted-foreground">not involved</span>
-        ) : (
-          <>
-            <span className="text-[11px] text-muted-foreground">
-              {net > 0 ? 'you lent' : 'you borrowed'}
-            </span>
-            <MoneyText signed cents={net} currency={e.currency} className="text-sm font-medium" />
-          </>
-        )}
-      </span>
+      <RightFact fact={fact} currency={e.currency} />
     </button>
   );
 }
 
-/** One settle-up, collapsed: the cash that moved, however many rows it was recorded as. */
+/**
+ * One settle-up, collapsed. Context decides the amount: the cash once when
+ * every row is in view; on a group page (or a filtered list) only the part
+ * applied here — "part of ₹8,380 payment" — never the full cash.
+ */
 function BatchRow({
   batch,
   rows,
+  allRows,
   nameOf,
-  tag,
+  tagOf,
   onOpen,
 }: {
   batch: SettlementBatch;
   rows: Expense[];
+  allRows: Expense[];
   nameOf: (id: number, nameCase?: NameCase) => string;
-  tag?: string;
+  tagOf: (groupId: number | null) => string | undefined;
   onOpen: () => void;
 }) {
-  const payer = nameOf(batch.payerId);
-  const payee = nameOf(batch.payeeId, 'object');
-  const line = `${payer} paid ${payee}`;
-  const hint = batchScopeHint(rows);
-  const amount = formatMoney(batch.amountCents, batch.currency);
+  const line = `${nameOf(batch.payerId)} paid ${nameOf(batch.payeeId, 'object')}`;
+  const ctx = batchInContext(batch, rows, allRows);
+  const amount = formatMoney(ctx.cents, batch.currency);
+  const total = formatMoney(ctx.totalCents, batch.currency);
+  const scopes = new Set(rows.map((r) => r.groupId));
+  const tag = scopes.size === 1 ? tagOf(rows[0].groupId) : undefined;
+  const hint = ctx.partial ? `part of ${total} payment` : acrossLabel(allRows);
   return (
     <button
       type="button"
       disabled={batch.id < 0}
       onClick={onOpen}
-      className="flex min-h-14 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
-      aria-label={`Payment: ${line} ${amount}${hint ? `, ${hint.toLowerCase()}` : ''}. Tap for the receipt.`}
+      className={rowClass}
+      aria-label={`Payment: ${line} ${ctx.partial ? `${total}; ${amount} ${ctx.offset ? 'offset' : 'applied'} here` : amount}${
+        !ctx.partial && hint ? `, ${hint}` : ''
+      }. Tap for the receipt.`}
     >
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-background text-muted-foreground">
+      <RowIcon>
         <HandCoins className="size-4" aria-hidden="true" />
-      </span>
+      </RowIcon>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="flex min-w-0 items-center gap-2 text-sm">
-          <span className="truncate">{line}</span>
-          {tag ? <Tag tag={tag} /> : null}
-        </span>
-        <span className="truncate text-xs text-muted-foreground">
-          {formatDateSafe(batch.date, 'MMM d', '—')}
-          {hint ? ` · ${hint}` : ''}
-        </span>
+        <span className="break-words">{line}</span>
+        <Meta parts={[formatDateSafe(batch.date, 'MMM d', '—'), tag, hint]} />
       </span>
-      <span className="shrink-0 text-sm tabular-nums">{amount}</span>
+      <span className="flex shrink-0 flex-col items-end gap-0.5">
+        {ctx.partial ? <FactLabel>{ctx.offset ? 'offset here' : 'applied here'}</FactLabel> : null}
+        <span className="text-sm whitespace-nowrap tabular-nums">{amount}</span>
+      </span>
     </button>
   );
 }
 
+/** A payment row on its own: legacy (no batch) or its batch not synced yet. */
 function PaymentRow({
   expense: e,
   nameOf,
@@ -424,15 +490,16 @@ function PaymentRow({
 }) {
   const payer = e.shares.find((s) => s.paidCents > 0);
   const recipient = e.shares.find((s) => s.owedCents > 0);
+  const line = `${payer ? nameOf(payer.userId) : 'Someone'} paid ${
+    recipient ? nameOf(recipient.userId, 'object') : 'someone'
+  }`;
   return (
     <button
       type="button"
       disabled={e.id < 0 || action === 'none'}
       onClick={onTap}
-      className="flex min-h-14 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
-      aria-label={`Payment: ${payer ? nameOf(payer.userId) : 'Someone'} paid ${
-        recipient ? nameOf(recipient.userId, 'object') : 'someone'
-      } ${formatMoney(e.amountCents, e.currency)}.${
+      className={rowClass}
+      aria-label={`Payment: ${line} ${formatMoney(e.amountCents, e.currency)}.${
         action === 'receipt'
           ? ' Tap for the receipt.'
           : action === 'delete'
@@ -440,17 +507,14 @@ function PaymentRow({
             : ''
       }`}
     >
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-background text-muted-foreground">
+      <RowIcon>
         <HandCoins className="size-4" aria-hidden="true" />
+      </RowIcon>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="break-words text-muted-foreground">{line}</span>
+        <Meta parts={[formatDateSafe(e.date, 'MMM d', '—'), tag]} />
       </span>
-      <span className="flex min-w-0 flex-1 items-center gap-2 text-sm text-muted-foreground">
-        <span className="truncate">
-          {payer ? nameOf(payer.userId) : 'Someone'} paid{' '}
-          {recipient ? nameOf(recipient.userId, 'object') : 'someone'}
-        </span>
-        {tag ? <Tag tag={tag} /> : null}
-      </span>
-      <span className="shrink-0 text-sm text-muted-foreground tabular-nums">
+      <span className="shrink-0 text-sm whitespace-nowrap text-muted-foreground tabular-nums">
         {formatMoney(e.amountCents, e.currency)}
       </span>
     </button>

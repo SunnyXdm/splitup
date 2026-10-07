@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { ArrowLeft, ArrowLeftRight, ChevronDown, ChevronRight, MoveRight } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, ChevronDown, ChevronRight } from 'lucide-react';
 import { MoneyText } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { Button } from '@/components/ui/button';
@@ -218,15 +218,14 @@ function ExplainBody({ target }: { target: ExplainTarget }) {
   }
 
   const entry = explainFriend(sync, friendId).find((e) => e.currency === currency);
+  const owesMe = (entry?.totalCents ?? 0) > 0;
   return (
     <>
       <SheetHeader className="pb-0">
-        <SheetTitle className="pr-8 text-xl">
-          {entry
-            ? whyTitle(names, names.meId, friendId, entry.totalCents, currency)
-            : `You and ${names.object(friendId)}`}
-        </SheetTitle>
-        <SheetDescription>{asOf(sync)}</SheetDescription>
+        <SheetTitle className="pr-8 text-xl">Balance breakdown</SheetTitle>
+        <SheetDescription>
+          You and {names.object(friendId)} · {asOf(sync)}
+        </SheetDescription>
       </SheetHeader>
       <Scroll>
         {!entry ? (
@@ -235,56 +234,70 @@ function ExplainBody({ target }: { target: ExplainTarget }) {
           </p>
         ) : (
           <>
-            <p className="text-muted-foreground">
-              Your balance with {names.object(friendId)} adds up what Splitup routes between you in
-              each group, plus expenses you share outside groups.
-              {entry.slices.length > 1
-                ? ' Tap one to see how it was worked out.'
-                : ' Tap it to see how it was worked out.'}
-            </p>
-            <div className="flex flex-col rounded-[20px] bg-muted/50 px-4">
-              {entry.slices.map((slice) => {
-                const group =
-                  slice.scope === null ? null : sync.groups.find((g) => g.id === slice.scope);
-                const label = slice.scope === null ? 'Direct' : (group?.name ?? 'Group');
-                return (
-                  <button
-                    key={slice.scope ?? 'direct'}
-                    type="button"
-                    onClick={() =>
-                      setDrill(
-                        slice.scope === null
-                          ? { kind: 'direct' }
-                          : { kind: 'group', groupId: slice.scope },
-                      )
-                    }
-                    className="flex min-h-16 w-full items-center gap-3 border-b border-border/60 py-3 text-left outline-none last:border-b-0 focus-visible:ring-2 focus-visible:ring-focus-ring"
-                  >
-                    <ScopeBadge emoji={slice.scope === null ? null : (group?.emoji ?? '👥')} />
-                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="truncate font-medium">{label}</span>
-                      <span className="truncate text-xs text-muted-foreground">
-                        {slice.cents > 0
-                          ? `${names.subject(friendId)} owes you`
-                          : `You owe ${names.object(friendId)}`}
-                      </span>
-                    </span>
-                    <Signed
-                      cents={slice.cents}
-                      currency={currency}
-                      className="text-sm font-medium"
-                    />
-                    <ChevronRight
-                      className="size-4 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                  </button>
-                );
-              })}
-              <TotalRow label="Total">
-                <Signed cents={entry.totalCents} currency={currency} />
-              </TotalRow>
+            {/* The answer first: the total, then where it comes from. */}
+            <div className="flex flex-col gap-1 rounded-card bg-muted/50 px-5 py-4">
+              <span className="text-sm text-muted-foreground">
+                {owesMe
+                  ? `${names.subject(friendId)} owes you`
+                  : `You owe ${names.object(friendId)}`}
+              </span>
+              <MoneyText
+                signed
+                cents={entry.totalCents}
+                currency={currency}
+                className="text-3xl font-medium tracking-tight"
+              />
+              <span className="sr-only">
+                {whyTitle(names, names.meId, friendId, entry.totalCents, currency)}
+              </span>
             </div>
+            <section className="flex flex-col gap-2">
+              <h3 className="eyebrow px-1">Where it comes from</h3>
+              <div className="flex flex-col rounded-panel bg-muted/50 px-4">
+                {entry.slices.map((slice) => {
+                  const group =
+                    slice.scope === null ? null : sync.groups.find((g) => g.id === slice.scope);
+                  const label = slice.scope === null ? 'Direct' : (group?.name ?? 'Group');
+                  return (
+                    <button
+                      key={slice.scope ?? 'direct'}
+                      type="button"
+                      onClick={() =>
+                        setDrill(
+                          slice.scope === null
+                            ? { kind: 'direct' }
+                            : { kind: 'group', groupId: slice.scope },
+                        )
+                      }
+                      className="flex min-h-16 w-full items-center gap-3 border-b border-border/60 py-3 text-left outline-none last:border-b-0 focus-visible:ring-2 focus-visible:ring-focus-ring"
+                    >
+                      <ScopeBadge emoji={slice.scope === null ? null : (group?.emoji ?? '👥')} />
+                      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span className="font-medium break-words">{label}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {slice.cents > 0
+                            ? `${names.subject(friendId)} owes you`
+                            : `You owe ${names.object(friendId)}`}
+                        </span>
+                      </span>
+                      <Signed
+                        cents={slice.cents}
+                        currency={currency}
+                        className="text-sm font-medium"
+                      />
+                      <ChevronRight
+                        className="size-4 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="px-1 text-sm text-muted-foreground">
+                Each group adds what Splitup routes between you there; Direct is bills outside any
+                group. Tap one to see how it was worked out.
+              </p>
+            </section>
           </>
         )}
       </Scroll>
@@ -482,7 +495,7 @@ function GroupTrace({ sync, names, x }: { sync: SyncData; names: Names; x: Group
 
   return (
     <>
-      <div className="flex flex-col gap-3 rounded-[20px] bg-muted/50 p-4">
+      <div className="flex flex-col gap-3 rounded-panel bg-muted/50 p-4">
         <p className="text-base font-medium tracking-tight">{headline}</p>
         <div className="flex flex-col gap-2 text-sm text-muted-foreground [&_p]:text-foreground/80">
           {people.map((m) => (
@@ -500,7 +513,7 @@ function GroupTrace({ sync, names, x }: { sync: SyncData; names: Names; x: Group
           type="button"
           aria-expanded={ledgerOpen}
           onClick={() => setLedgerOpen((o) => !o)}
-          className="flex items-center justify-between gap-3 rounded-full py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+          className="flex min-h-11 items-center justify-between gap-3 rounded-full py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
         >
           <span className="eyebrow">
             {x.ledger.length === 1 ? '1 expense' : `${x.ledger.length} expenses`} in this group
@@ -514,7 +527,7 @@ function GroupTrace({ sync, names, x }: { sync: SyncData; names: Names; x: Group
           />
         </button>
         {ledgerOpen ? (
-          <div className="flex flex-col rounded-[20px] bg-muted/50 px-4">
+          <div className="flex flex-col rounded-panel bg-muted/50 px-4">
             {x.ledger.length === 0 ? (
               <p className="py-3 text-sm text-muted-foreground">
                 Nothing recorded in {currency} yet.
@@ -592,11 +605,11 @@ function GroupTrace({ sync, names, x }: { sync: SyncData; names: Names; x: Group
                 key={s.index}
                 aria-current={s.highlighted ? 'true' : undefined}
                 className={cn(
-                  'flex flex-col gap-2 rounded-[20px] px-4 py-3',
+                  'flex flex-col gap-2 rounded-panel px-4 py-3',
                   s.highlighted ? 'bg-signal/10 ring-1 ring-signal/50' : 'bg-muted/50',
                 )}
               >
-                <span className="flex items-center gap-3 text-sm">
+                <span className="flex items-start gap-3 text-sm">
                   <span
                     className={cn(
                       'flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium tabular-nums',
@@ -608,16 +621,17 @@ function GroupTrace({ sync, names, x }: { sync: SyncData; names: Names; x: Group
                   >
                     {s.index + 1}
                   </span>
-                  <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                    <span className="truncate font-medium">{names.subject(s.fromUserId)}</span>
-                    <MoveRight
-                      className="size-3.5 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                    <span className="sr-only">pays</span>
-                    <span className="truncate font-medium">{names.subject(s.toUserId)}</span>
+                  {/* A sentence that wraps: names and "you" are never cut. */}
+                  <span className="min-w-0 flex-1 break-words">
+                    <span className="font-medium">{names.subject(s.fromUserId)}</span>{' '}
+                    <span className="text-muted-foreground">
+                      {s.fromUserId === names.meId ? 'pay' : 'pays'}
+                    </span>{' '}
+                    <span className="font-medium">{names.object(s.toUserId)}</span>
                   </span>
-                  <span className="shrink-0 tabular-nums">{formatMoney(s.cents, currency)}</span>
+                  <span className="shrink-0 whitespace-nowrap tabular-nums">
+                    {formatMoney(s.cents, currency)}
+                  </span>
                 </span>
                 {/* Where this step sits on the line of everything owed. */}
                 <span
@@ -640,9 +654,8 @@ function GroupTrace({ sync, names, x }: { sync: SyncData; names: Names; x: Group
           </ol>
         )}
         <p className="px-1 text-sm text-muted-foreground">
-          Splitup matches people who owe with people who are owed in a fixed order to keep transfers
-          few. Other members&rsquo; expenses can change who you pay, but never your total in the
-          group.
+          Splitup pairs people who owe with people who are owed, in a fixed order, to keep payments
+          few. Other members&rsquo; expenses can change who you pay — never your total here.
         </p>
       </section>
     </>
@@ -667,10 +680,10 @@ function DirectTrace({
   return (
     <>
       <p className="text-muted-foreground">
-        Expenses and payments between you and {friend} outside any group, and what each one did to
-        your balance.
+        Bills and payments between you and {friend} outside any group, and what each did to your
+        balance.
       </p>
-      <div className="flex flex-col rounded-[20px] bg-muted/50 px-4">
+      <div className="flex flex-col rounded-panel bg-muted/50 px-4">
         {x.items.map((item) => {
           if (item.kind === 'group') {
             const g = sync.groups.find((gr) => gr.id === item.groupId);

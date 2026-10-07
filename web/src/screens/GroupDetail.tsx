@@ -8,13 +8,14 @@ import {
   ChevronRight,
   Download,
   EllipsisVertical,
+  History,
+  Link2,
   LogOut,
-  MoveRight,
   PencilLine,
+  Plus,
   ReceiptText,
   Repeat,
   Trash2,
-  UserRoundPlus,
   UsersRound,
 } from 'lucide-react';
 import {
@@ -52,10 +53,12 @@ import { MoneyText } from '@/components/common/MoneyText';
 import { GuestPill, UserAvatar } from '@/components/common/UserAvatar';
 import ExplainBalanceSheet, { type ExplainTarget } from '@/components/common/ExplainBalanceSheet';
 import { DraftsChip } from '@/components/expense/DraftsSheet';
+import { ExpenseDetailSheets } from '@/components/expense/ExpenseDetailSheet';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import RecentlyDeletedSheet from '@/components/expense/RecentlyDeletedSheet';
 import SettleUpSheet, { type SettleDirection } from '@/components/expense/SettleUpSheet';
 import AddMembersSheet from '@/components/group/AddMembersSheet';
+import { HistoryScopeContext } from '@/components/group/history-scope';
 import FilteredHistory from '@/components/search/FilteredHistory';
 import GroupSummary from '@/components/summary/GroupSummary';
 import GroupFormFields, { type GroupFormValues } from '@/components/group/GroupFormFields';
@@ -64,19 +67,17 @@ import { ApiError, errorMessage, isDepartedMember } from '@/lib/api';
 import { buildGroupCsv, downloadCsv } from '@/lib/export-csv';
 import { reminderText, sendReminder } from '@/lib/remind';
 import { myOpenGroupBalances } from '@/lib/archive';
-import { groupBalances, groupExpenses, groupSettlements } from '@/lib/balances';
+import { groupBalances, groupExpenses, groupSettlements, type Transfer } from '@/lib/balances';
 import { isGuest } from '@/lib/guests';
 import { formatMoney } from '@/lib/money';
-import {
-  useDeleteGroup,
-  useLeaveGroup,
-  useSyncData,
-  useUpdateGroup,
-} from '@/lib/queries';
+import { displayName } from '@/lib/names';
+import { useDeleteGroup, useLeaveGroup, useSyncData, useUpdateGroup } from '@/lib/queries';
 import type { Expense, User } from '@/lib/types';
 import { useArchiveToggle } from '@/lib/use-archive-group';
+import { useExpenseDetail } from '@/lib/use-expense-detail';
 import { useOverlayNavigate } from '@/lib/use-history-dismiss';
 import { useParamState } from '@/lib/use-history-filters';
+import { cn } from '@/lib/utils';
 
 const TABS = ['expenses', 'balances', 'summary'] as const;
 
@@ -100,6 +101,7 @@ export default function GroupDetail() {
   const leaveGroup = useLeaveGroup();
   const deleteGroup = useDeleteGroup();
   const toggleArchive = useArchiveToggle();
+  const detail = useExpenseDetail(sync);
 
   const [editValues, setEditValues] = useState<GroupFormValues | null>(null);
   const [leaveOpen, setLeaveOpen] = useState(false);
@@ -123,22 +125,25 @@ export default function GroupDetail() {
     // yet — show the skeleton while the refetch is in flight, not "not found".
     if (syncFetching) return <GroupDetailSkeleton />;
     return (
-      <Empty className="rounded-[28px] bg-card py-16">
-        <EmptyHeader>
-          <EmptyMedia variant="icon" className="rounded-full">
-            <UsersRound />
-          </EmptyMedia>
-          <EmptyTitle>Group not found</EmptyTitle>
-          <EmptyDescription>
-            This group doesn&rsquo;t exist or you&rsquo;re no longer a member.
-          </EmptyDescription>
-        </EmptyHeader>
-        <EmptyContent>
-          <Button variant="outline" className="rounded-full" onClick={() => navigate('/')}>
-            Back home
-          </Button>
-        </EmptyContent>
-      </Empty>
+      <div className="flex flex-col gap-4 pb-6">
+        <BackButton className="self-start" />
+        <Empty className="rounded-card bg-card py-16">
+          <EmptyHeader>
+            <EmptyMedia variant="icon" className="rounded-full">
+              <UsersRound />
+            </EmptyMedia>
+            <EmptyTitle>Group not found</EmptyTitle>
+            <EmptyDescription>
+              This group doesn&rsquo;t exist or you&rsquo;re no longer a member.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button variant="outline" size="pill" onClick={() => navigate('/')}>
+              Back home
+            </Button>
+          </EmptyContent>
+        </Empty>
+      </div>
     );
   }
 
@@ -147,12 +152,16 @@ export default function GroupDetail() {
   const members = group.memberIds
     .map((uid) => usersById.get(uid))
     .filter((u): u is User => u !== undefined);
-  const nameOf = (uid: number) => (uid === meId ? 'You' : (usersById.get(uid)?.name ?? 'Someone'));
+  const subject = (uid: number) => displayName(usersById.get(uid), meId);
+  const object = (uid: number) => displayName(usersById.get(uid), meId, { case: 'object' });
   const expenses = groupExpenses(sync, group.id);
   const balances = groupBalances(sync, group.id);
   const transfers = groupSettlements(sync, group.id);
+  const myNets = balances.filter((b) => b.userId === meId && b.netCents !== 0);
   const archived = group.archivedAt != null;
   const stillOwing = archived && myOpenGroupBalances(sync, group.id).length > 0;
+  const recurringCount = (sync.recurring?.rules ?? []).filter((r) => r.groupId === group.id).length;
+  const justMe = members.length <= 1;
   // "Paid by" choices: current members, plus anyone who paid here before
   // leaving the group.
   const payerIds = new Set(group.memberIds);
@@ -162,14 +171,43 @@ export default function GroupDetail() {
     .map((uid) => usersById.get(uid))
     .filter((u): u is User => u !== undefined)
     .sort((a, b) => a.name.localeCompare(b.name));
+
   const editExpense = (e: Expense) => {
     setEditingExpense(e);
+    setExpenseOpen(true);
+  };
+  const addExpense = () => {
+    setEditingExpense(undefined);
     setExpenseOpen(true);
   };
 
   const explain = (target: ExplainTarget) => {
     setExplainTarget(target);
     setExplainOpen(true);
+  };
+
+  const settleTransfer = (t: Transfer) => {
+    setSettlePrefill({
+      toUserId: t.toUserId === meId ? t.fromUserId : t.toUserId,
+      suggestedCents: t.cents,
+      currency: t.currency,
+      // Transfer TO me = they pay me; FROM me = I pay.
+      direction: t.toUserId === meId ? 'they_paid' : 'i_paid',
+    });
+    setSettleOpen(true);
+  };
+
+  const openSettleUp = () => {
+    // Prefill from my largest suggested payment so direction and counterparty
+    // are never silently guessed wrong.
+    const mine = transfers.filter((t) => t.fromUserId === meId || t.toUserId === meId);
+    const best = mine.length ? mine.reduce((a, b) => (b.cents > a.cents ? b : a)) : null;
+    if (best) {
+      settleTransfer(best);
+    } else {
+      setSettlePrefill({ currency: group.currency });
+      setSettleOpen(true);
+    }
   };
 
   const openEdit = () =>
@@ -228,47 +266,38 @@ export default function GroupDetail() {
     });
   };
 
+  /** "Darshna Gupta owes you", "You owe Rohan Mehta", "Jake owes Emily". */
+  const transferSentence = (t: Transfer) =>
+    t.fromUserId === meId
+      ? `You owe ${object(t.toUserId)}`
+      : `${subject(t.fromUserId)} owes ${object(t.toUserId)}`;
+
   return (
-    <div className="flex flex-col gap-6 pb-6">
-      <BackButton className="-mb-2" />
-      <header className="flex flex-wrap items-center gap-4">
-        <span
-          className="flex size-14 shrink-0 items-center justify-center rounded-full bg-card text-3xl"
-          aria-hidden="true"
-        >
-          {group.emoji}
-        </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <h1 className="truncate text-2xl">{group.name}</h1>
-          <div className="flex items-center gap-2">
-            <div className="flex -space-x-2">
-              {members.slice(0, 6).map((u) => (
-                <UserAvatar key={u.id} user={u} size="sm" className="ring-2 ring-background" />
-              ))}
-            </div>
-            <span className="text-sm text-muted-foreground">
-              {memberCountLabel(members)}
-            </span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            className="h-10 rounded-full px-4"
-            onClick={() => setAddPeopleOpen(true)}
-            disabled={!online}
+    <div className="flex flex-col gap-5 pb-6">
+      <header className="flex flex-col gap-2">
+        {/* Row 1: back, identity, the group's ⋯. The name wraps to two lines. */}
+        <div className="flex items-start gap-3">
+          <BackButton />
+          <span
+            className="flex size-11 shrink-0 items-center justify-center rounded-full bg-card text-2xl"
+            aria-hidden="true"
           >
-            <UserRoundPlus data-icon="inline-start" aria-hidden="true" />
-            People
-          </Button>
+            {group.emoji}
+          </span>
+          <h1
+            tabIndex={-1}
+            className="line-clamp-2 min-w-0 flex-1 self-center text-2xl leading-tight font-medium tracking-[-0.02em] break-words outline-none"
+          >
+            {group.name}
+          </h1>
           <DropdownMenu>
             <DropdownMenuTrigger
-              render={<Button variant="outline" size="icon-lg" className="size-10 rounded-full" />}
+              render={<Button variant="outline" size="icon" className="size-11 rounded-full" />}
             >
               <EllipsisVertical aria-hidden="true" />
               <span className="sr-only">Group options</span>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-44">
+            <DropdownMenuContent align="end" className="min-w-48">
               <DropdownMenuItem onClick={openEdit}>
                 <PencilLine aria-hidden="true" /> Edit group
               </DropdownMenuItem>
@@ -280,10 +309,7 @@ export default function GroupDetail() {
               >
                 <Download aria-hidden="true" /> Export expenses
               </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!online}
-                onClick={() => toggleArchive(group, !archived)}
-              >
+              <DropdownMenuItem disabled={!online} onClick={() => toggleArchive(group, !archived)}>
                 {archived ? (
                   <>
                     <ArchiveRestore aria-hidden="true" /> Unarchive
@@ -293,12 +319,6 @@ export default function GroupDetail() {
                     <Archive aria-hidden="true" /> Archive
                   </>
                 )}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setDeletedOpen(true)} disabled={!online}>
-                <Trash2 aria-hidden="true" /> Recently deleted
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => navigate(`/recurring?group=${group.id}`)}>
-                <Repeat aria-hidden="true" /> Recurring bills
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setLeaveOpen(true)}>
@@ -312,10 +332,84 @@ export default function GroupDetail() {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+        {/* Row 2: who's in it — one button that opens People. */}
+        <button
+          type="button"
+          onClick={() => setAddPeopleOpen(true)}
+          aria-label={`People: ${memberCountLabel(members)}. Manage members and invites.`}
+          className="-ml-1 flex min-h-11 w-fit max-w-full items-center gap-2 rounded-full py-1 pr-3 pl-1 text-left outline-none hover:bg-card focus-visible:ring-2 focus-visible:ring-focus-ring"
+        >
+          <span className="flex shrink-0 -space-x-2">
+            {members.slice(0, 5).map((u) => (
+              <UserAvatar key={u.id} user={u} size="sm" className="ring-2 ring-background" />
+            ))}
+          </span>
+          <span className="text-sm whitespace-nowrap text-muted-foreground">
+            {memberCountLabel(members)}
+          </span>
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </button>
       </header>
 
+      {/* Summary band: where I stand here, and the way to settle it. */}
+      {justMe ? null : (
+        <section
+          aria-label="Your balance in this group"
+          className="flex flex-wrap items-center gap-x-4 gap-y-3 rounded-card bg-card px-5 py-4"
+        >
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            {myNets.length === 0 ? (
+              <p className="text-base">
+                You&rsquo;re settled up <span className="text-muted-foreground">in this group</span>
+              </p>
+            ) : (
+              myNets.map((b) => (
+                <button
+                  key={b.currency}
+                  type="button"
+                  onClick={() =>
+                    explain({
+                      kind: 'group',
+                      groupId: group.id,
+                      currency: b.currency,
+                      focusId: meId,
+                      otherId: null,
+                    })
+                  }
+                  aria-label={`You ${b.netCents > 0 ? 'get back' : 'owe'} ${formatMoney(
+                    Math.abs(b.netCents),
+                    b.currency,
+                  )} in this group. Balance breakdown.`}
+                  className="flex min-h-11 w-fit max-w-full flex-col items-start rounded-panel text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+                >
+                  <span className="text-sm text-muted-foreground">
+                    {b.netCents > 0 ? 'You get back' : 'You owe'}
+                  </span>
+                  <MoneyText
+                    signed
+                    animate
+                    cents={b.netCents}
+                    currency={b.currency}
+                    className="text-2xl font-medium tracking-tight whitespace-nowrap"
+                  />
+                </button>
+              ))
+            )}
+          </div>
+          <Button
+            variant={myNets.length > 0 ? 'default' : 'outline'}
+            size="pill"
+            disabled={!online}
+            onClick={openSettleUp}
+          >
+            Settle up
+            <ChevronRight data-icon="inline-end" aria-hidden="true" />
+          </Button>
+        </section>
+      )}
+
       {archived && (
-        <p className="-mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+        <p className="-mt-1 flex items-center gap-2 text-sm text-muted-foreground">
           <Archive className="size-4 shrink-0" aria-hidden="true" />
           <span>
             Archived — hidden from your Home.
@@ -326,11 +420,7 @@ export default function GroupDetail() {
 
       <DraftsChip scope={{ kind: 'group', groupId: group.id }} className="self-start" />
 
-      <Tabs
-        value={tab}
-        onValueChange={(v) => setTab(v as (typeof TABS)[number])}
-        className="gap-4"
-      >
+      <Tabs value={tab} onValueChange={(v) => setTab(v as (typeof TABS)[number])} className="gap-4">
         <TabsList className="w-full rounded-full p-1">
           <TabsTrigger value="expenses" className="rounded-full">
             Expenses
@@ -343,235 +433,185 @@ export default function GroupDetail() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="expenses">
-          <FilteredHistory
-            sync={sync}
-            expenses={expenses}
-            people={payerPeople}
-            onSelect={editExpense}
-            placeholder={`Search ${group.name}`}
-            empty={
-              <Empty className="rounded-[28px] bg-card py-12">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon" className="rounded-full">
-                    <ReceiptText />
-                  </EmptyMedia>
-                  <EmptyTitle>No expenses yet</EmptyTitle>
-                  <EmptyDescription>Add the first expense with the + button.</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            }
-          />
+        <TabsContent value="expenses" className="flex flex-col gap-4">
+          <HistoryScopeContext value={{ kind: 'group', groupId: group.id }}>
+            <FilteredHistory
+              sync={sync}
+              expenses={expenses}
+              people={payerPeople}
+              onSelect={detail.open}
+              placeholder={`Search ${group.name}`}
+              empty={
+                justMe ? (
+                  <Empty className="rounded-card bg-card py-12">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon" className="rounded-full">
+                        <UsersRound />
+                      </EmptyMedia>
+                      <EmptyTitle>Invite people first</EmptyTitle>
+                      <EmptyDescription>
+                        Add friends, share an invite link, or add guests who don&rsquo;t use
+                        Splitup. Then split your first bill.
+                      </EmptyDescription>
+                    </EmptyHeader>
+                    <EmptyContent>
+                      <Button size="cta" onClick={() => setAddPeopleOpen(true)}>
+                        <Link2 data-icon="inline-start" aria-hidden="true" />
+                        Invite people
+                      </Button>
+                    </EmptyContent>
+                  </Empty>
+                ) : (
+                  <Empty className="rounded-card bg-card py-12">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon" className="rounded-full">
+                        <ReceiptText />
+                      </EmptyMedia>
+                      <EmptyTitle>No expenses yet</EmptyTitle>
+                      <EmptyDescription>
+                        Add a bill and Splitup works out who owes whom.
+                      </EmptyDescription>
+                    </EmptyHeader>
+                    <EmptyContent>
+                      <Button size="cta" onClick={addExpense}>
+                        <Plus data-icon="inline-start" aria-hidden="true" />
+                        Add expense
+                      </Button>
+                    </EmptyContent>
+                  </Empty>
+                )
+              }
+            />
+          </HistoryScopeContext>
+          {/* Quiet links at the end of the list: schedules and recovery. */}
+          <nav aria-label="More for this group" className="flex flex-col">
+            <QuietLink
+              icon={<Repeat aria-hidden="true" />}
+              onClick={() => navigate(`/recurring?group=${group.id}`)}
+            >
+              {recurringCount === 0
+                ? 'Recurring bills'
+                : `${recurringCount} recurring ${recurringCount === 1 ? 'bill' : 'bills'}`}
+            </QuietLink>
+            <QuietLink
+              icon={<History aria-hidden="true" />}
+              disabled={!online}
+              onClick={() => setDeletedOpen(true)}
+            >
+              Recently deleted
+            </QuietLink>
+          </nav>
         </TabsContent>
 
         <TabsContent value="summary">
-          <GroupSummary sync={sync} groupId={group.id} onSelect={editExpense} />
+          <GroupSummary sync={sync} groupId={group.id} onSelect={detail.open} />
         </TabsContent>
 
         <TabsContent value="balances">
           <div className="flex flex-col gap-6">
-            <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
-              {members.map((u) => {
-                const nets = balances.filter((b) => b.userId === u.id && b.netCents !== 0);
-                const rowContent = (
-                  <>
-                    <UserAvatar user={u} />
-                    <span className="flex min-w-0 flex-1 items-center gap-2">
-                      <span className="truncate font-medium">
-                        {u.id === meId ? 'You' : u.name}
-                      </span>
-                      {isGuest(u) ? <GuestPill /> : null}
-                    </span>
-                    <span className="flex shrink-0 flex-col items-end gap-0.5">
-                      {nets.length === 0 ? (
-                        <span className="text-sm text-muted-foreground">settled up</span>
-                      ) : (
-                        nets.map((b) => (
-                          // Direction in words, not just color.
-                          <span key={b.currency} className="flex flex-col items-end">
-                            <span className="text-[11px] text-muted-foreground">
-                              {u.id === meId
-                                ? b.netCents > 0
-                                  ? 'you get back'
-                                  : 'you owe'
-                                : b.netCents > 0
-                                  ? 'gets back'
-                                  : 'owes'}
-                            </span>
-                            <MoneyText
-                              signed
-                              animate
-                              cents={b.netCents}
-                              currency={b.currency}
-                              className="text-sm font-medium"
-                            />
-                          </span>
-                        ))
-                      )}
-                    </span>
-                    {nets.length > 0 ? (
-                      <ChevronRight
-                        className="size-4 shrink-0 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                    ) : null}
-                  </>
-                );
-                if (nets.length === 0) {
-                  return (
-                    <div key={u.id} className="flex min-h-16 items-center gap-3 py-3">
-                      {rowContent}
-                    </div>
-                  );
-                }
-                // Explains this member's own group net (first currency; the
-                // sheet offers a switch when there are more).
-                const first = nets[0];
-                const subject = u.id === meId ? 'do you' : `does ${u.name}`;
-                return (
-                  <button
+            <section className="flex flex-col gap-2">
+              <h2 className="eyebrow px-1">Member balances</h2>
+              <div className="flex flex-col divide-y divide-border/60 rounded-card bg-card px-4">
+                {members.map((u) => (
+                  <MemberRow
                     key={u.id}
-                    type="button"
-                    aria-label={`Why ${subject} ${first.netCents > 0 ? 'get back' : 'owe'} ${formatMoney(
-                      Math.abs(first.netCents),
-                      first.currency,
-                    )}?`}
-                    onClick={() =>
+                    user={u}
+                    isMe={u.id === meId}
+                    nets={balances.filter((b) => b.userId === u.id && b.netCents !== 0)}
+                    onExplain={(currency) =>
                       explain({
                         kind: 'group',
                         groupId: group.id,
-                        currency: first.currency,
+                        currency,
                         focusId: u.id,
                         otherId: null,
                       })
                     }
-                    className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
-                  >
-                    {rowContent}
-                  </button>
-                );
-              })}
-            </div>
+                  />
+                ))}
+              </div>
+            </section>
 
-            <section className="flex flex-col gap-3">
-              <span className="eyebrow">Suggested settlements</span>
+            <section className="flex flex-col gap-2">
+              <h2 className="eyebrow px-1">Payments to settle up</h2>
               {transfers.length === 0 ? (
                 <p className="px-1 text-sm text-muted-foreground">Everyone is settled up.</p>
               ) : (
-                <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
-                  {transfers.map((t, i) => {
-                    const involved = t.fromUserId === meId || t.toUserId === meId;
-                    const other = t.fromUserId === meId ? t.toUserId : t.fromUserId;
-                    return (
-                      <div
-                        key={`${t.fromUserId}-${t.toUserId}-${t.currency}-${i}`}
-                        className="flex min-h-14 items-center gap-3 py-3"
-                      >
-                        <button
-                          type="button"
-                          aria-label={`Why ${
-                            t.fromUserId === meId
-                              ? `do you pay ${nameOf(t.toUserId)}`
-                              : `does ${nameOf(t.fromUserId)} pay ${
-                                  t.toUserId === meId ? 'you' : nameOf(t.toUserId)
-                                }`
-                          } ${formatMoney(t.cents, t.currency)}?`}
-                          onClick={() =>
-                            explain({
-                              kind: 'group',
-                              groupId: group.id,
-                              currency: t.currency,
-                              // From my side when I'm in it; else the creditor's.
-                              focusId: involved ? meId : t.toUserId,
-                              otherId: involved ? other : t.fromUserId,
-                            })
-                          }
-                          className="-my-1 flex min-w-0 flex-1 items-center gap-3 rounded-full py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+                <>
+                  <p className="px-1 text-sm text-muted-foreground">
+                    Splitup simplifies the group&rsquo;s debts into as few payments as possible, so
+                    you may pay someone you never split a bill with. Tap a payment to see why.
+                  </p>
+                  <div className="flex flex-col divide-y divide-border/60 rounded-card bg-card px-4">
+                    {transfers.map((t, i) => {
+                      const involved = t.fromUserId === meId || t.toUserId === meId;
+                      const other = t.fromUserId === meId ? t.toUserId : t.fromUserId;
+                      const sentence = transferSentence(t);
+                      const amount = formatMoney(t.cents, t.currency);
+                      return (
+                        <div
+                          key={`${t.fromUserId}-${t.toUserId}-${t.currency}-${i}`}
+                          className="relative py-2"
                         >
-                          <span className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
-                            <span className="truncate font-medium">{nameOf(t.fromUserId)}</span>
-                            <MoveRight
-                              className="size-3.5 shrink-0 text-muted-foreground"
-                              aria-hidden="true"
-                            />
-                            <span className="truncate font-medium">{nameOf(t.toUserId)}</span>
-                          </span>
-                          <span className="shrink-0 text-sm tabular-nums underline decoration-muted-foreground/60 decoration-dotted underline-offset-4">
-                            {formatMoney(t.cents, t.currency)}
-                          </span>
-                        </button>
-                        {t.toUserId === meId ? (
-                          <Button
-                            size="icon-sm"
-                            variant="ghost"
-                            className="rounded-full"
-                            aria-label={`Remind ${nameOf(t.fromUserId)}`}
+                          <button
+                            type="button"
+                            aria-label={`${sentence} ${amount}. Why?`}
                             onClick={() =>
-                              void sendReminder(
-                                reminderText(
-                                  nameOf(t.fromUserId),
-                                  formatMoney(t.cents, t.currency),
-                                  `in "${group.name}"`,
-                                  // Guests can't sign in: no sign-in link for them.
-                                  { withLink: !isGuest(usersById.get(t.fromUserId)) },
-                                ),
-                              )
+                              explain({
+                                kind: 'group',
+                                groupId: group.id,
+                                currency: t.currency,
+                                // From my side when I'm in it; else the creditor's.
+                                focusId: involved ? meId : t.toUserId,
+                                otherId: involved ? other : t.fromUserId,
+                              })
                             }
+                            className="flex w-full flex-col items-start gap-0.5 rounded-panel py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
                           >
-                            <BellRing aria-hidden="true" />
-                          </Button>
-                        ) : null}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="rounded-full"
-                          disabled={!involved || !online}
-                          onClick={() => {
-                            setSettlePrefill({
-                              toUserId: other,
-                              suggestedCents: t.cents,
-                              currency: t.currency,
-                              // Transfer TO me = they pay me; FROM me = I pay.
-                              direction: t.toUserId === meId ? 'they_paid' : 'i_paid',
-                            });
-                            setSettleOpen(true);
-                          }}
-                        >
-                          Settle
-                        </Button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              {members.length > 1 && (
-                <Button
-                  className="h-11 rounded-full"
-                  disabled={!online}
-                  onClick={() => {
-                    // Prefill from my largest suggested settlement so direction
-                    // and counterparty are never silently guessed wrong.
-                    const mine = transfers.filter(
-                      (t) => t.fromUserId === meId || t.toUserId === meId,
-                    );
-                    const best = mine.length
-                      ? mine.reduce((a, b) => (b.cents > a.cents ? b : a))
-                      : null;
-                    setSettlePrefill(
-                      best
-                        ? {
-                            toUserId: best.toUserId === meId ? best.fromUserId : best.toUserId,
-                            suggestedCents: best.cents,
-                            currency: best.currency,
-                            direction: best.toUserId === meId ? 'they_paid' : 'i_paid',
-                          }
-                        : { currency: group.currency },
-                    );
-                    setSettleOpen(true);
-                  }}
-                >
-                  Settle up
-                </Button>
+                            <span className="pr-1 text-base break-words">{sentence}</span>
+                            <span className="flex min-h-11 items-center text-lg font-medium whitespace-nowrap tabular-nums underline decoration-muted-foreground/60 decoration-dotted underline-offset-4">
+                              {amount}
+                            </span>
+                          </button>
+                          {involved ? (
+                            <div className="absolute right-0 bottom-3 flex items-center gap-1">
+                              {t.toUserId === meId ? (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="size-11 rounded-full"
+                                  aria-label={`Remind ${subject(t.fromUserId)}`}
+                                  onClick={() =>
+                                    void sendReminder(
+                                      reminderText(
+                                        subject(t.fromUserId),
+                                        amount,
+                                        `in "${group.name}"`,
+                                        // Guests can't sign in: no sign-in link for them.
+                                        { withLink: !isGuest(usersById.get(t.fromUserId)) },
+                                      ),
+                                    )
+                                  }
+                                >
+                                  <BellRing aria-hidden="true" />
+                                </Button>
+                              ) : null}
+                              <Button
+                                variant="outline"
+                                size="pill"
+                                className="px-4"
+                                disabled={!online}
+                                onClick={() => settleTransfer(t)}
+                              >
+                                Settle
+                              </Button>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
               )}
             </section>
           </div>
@@ -648,6 +688,7 @@ export default function GroupDetail() {
         groupId={group.id}
         expense={editingExpense}
       />
+      <ExpenseDetailSheets detail={detail} onEdit={editExpense} />
       <ExplainBalanceSheet
         open={explainOpen}
         onOpenChange={setExplainOpen}
@@ -672,6 +713,99 @@ export default function GroupDetail() {
   );
 }
 
+/** One member's group net(s); tapping explains it (first currency, switchable in the sheet). */
+function MemberRow({
+  user: u,
+  isMe,
+  nets,
+  onExplain,
+}: {
+  user: User;
+  isMe: boolean;
+  nets: { currency: string; netCents: number }[];
+  onExplain: (currency: string) => void;
+}) {
+  const content = (
+    <>
+      <UserAvatar user={u} />
+      <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+        <span className={cn('break-words', isMe ? 'font-medium' : null)}>
+          {isMe ? 'You' : u.name}
+        </span>
+        {isGuest(u) ? <GuestPill /> : null}
+      </span>
+      <span className="flex shrink-0 flex-col items-end gap-1">
+        {nets.length === 0 ? (
+          <span className="text-sm text-muted-foreground">settled up</span>
+        ) : (
+          nets.map((b) => (
+            // Direction in words, not just color.
+            <span key={b.currency} className="flex flex-col items-end">
+              <span className="text-xs text-muted-foreground">
+                {b.netCents > 0 ? (isMe ? 'you get back' : 'gets back') : isMe ? 'you owe' : 'owes'}
+              </span>
+              <MoneyText
+                signed
+                animate
+                cents={b.netCents}
+                currency={b.currency}
+                className="text-sm font-medium whitespace-nowrap"
+              />
+            </span>
+          ))
+        )}
+      </span>
+      {nets.length > 0 ? (
+        <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      ) : null}
+    </>
+  );
+  if (nets.length === 0) {
+    return <div className="flex min-h-16 items-center gap-3 py-3">{content}</div>;
+  }
+  const first = nets[0];
+  const subject = isMe ? 'do you' : `does ${u.name}`;
+  return (
+    <button
+      type="button"
+      aria-label={`Why ${subject} ${first.netCents > 0 ? 'get back' : 'owe'} ${formatMoney(
+        Math.abs(first.netCents),
+        first.currency,
+      )}?`}
+      onClick={() => onExplain(first.currency)}
+      className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+    >
+      {content}
+    </button>
+  );
+}
+
+/** A quiet full-width row link (icon, label, chevron) — secondary destinations. */
+function QuietLink({
+  icon,
+  children,
+  onClick,
+  disabled,
+}: {
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="flex min-h-12 w-full items-center gap-3 rounded-full px-3 text-left text-sm text-muted-foreground outline-none hover:bg-card hover:text-foreground focus-visible:ring-2 focus-visible:ring-focus-ring disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0"
+    >
+      {icon}
+      <span className="min-w-0 flex-1">{children}</span>
+      <ChevronRight className="text-muted-foreground" aria-hidden="true" />
+    </button>
+  );
+}
+
 /** "Just you", "3 members", "2 members · 1 guest" — guests counted apart. */
 function memberCountLabel(members: User[]): string {
   const guests = members.filter((u) => isGuest(u)).length;
@@ -682,16 +816,16 @@ function memberCountLabel(members: User[]): string {
 
 function GroupDetailSkeleton() {
   return (
-    <div className="flex flex-col gap-6 pb-6">
-      <div className="flex items-center gap-4">
-        <Skeleton className="size-14 rounded-full" />
-        <div className="flex flex-1 flex-col gap-2">
-          <Skeleton className="h-6 w-40 rounded-full" />
-          <Skeleton className="h-4 w-24 rounded-full" />
-        </div>
+    <div className="flex flex-col gap-5 pb-6">
+      <div className="flex items-center gap-3">
+        <Skeleton className="size-11 rounded-full" />
+        <Skeleton className="size-11 rounded-full" />
+        <Skeleton className="h-7 flex-1 rounded-full" />
       </div>
+      <Skeleton className="h-9 w-40 rounded-full" />
+      <Skeleton className="h-20 rounded-card" />
       <Skeleton className="h-11 rounded-full" />
-      <Skeleton className="h-40 rounded-[28px]" />
+      <Skeleton className="h-40 rounded-card" />
     </div>
   );
 }
