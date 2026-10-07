@@ -37,8 +37,10 @@ export interface CurrencySummary {
   paymentsReceivedCents: number;
   /** My share by category, largest first; zero categories omitted. */
   categories: CategoryTotal[];
-  /** The 5 biggest expenses by amount (ties: newest first). */
+  /** The 5 biggest expenses by whole-bill amount (ties: newest first). */
   top: Expense[];
+  /** The 5 expenses where MY share was biggest (ties: newest first). */
+  topMine: Expense[];
 }
 
 export const TOP_N = 5;
@@ -52,16 +54,25 @@ function compareTop(a: Expense, b: Expense): number {
 }
 
 /** Insert into a sorted top-N list — O(N) per item, so O(n) overall. */
-function pushTop(top: Expense[], e: Expense) {
-  if (top.length === TOP_N && compareTop(e, top[TOP_N - 1]) >= 0) return;
+function pushTop(
+  top: Expense[],
+  e: Expense,
+  compare: (a: Expense, b: Expense) => number = compareTop,
+) {
+  if (top.length === TOP_N && compare(e, top[TOP_N - 1]) >= 0) return;
   let i = top.length;
-  while (i > 0 && compareTop(e, top[i - 1]) < 0) i -= 1;
+  while (i > 0 && compare(e, top[i - 1]) < 0) i -= 1;
   top.splice(i, 0, e);
   if (top.length > TOP_N) top.pop();
 }
 
 interface Acc extends Omit<CurrencySummary, 'categories'> {
   byCategory: Map<Category, number>;
+}
+
+/** My owed share of an expense (0 when I'm not in it). */
+function myShareOf(e: Expense, meId: number): number {
+  return e.shares?.find((s) => s.userId === meId)?.owedCents ?? 0;
 }
 
 /**
@@ -89,12 +100,15 @@ export function summarize(
         paymentsReceivedCents: 0,
         byCategory: new Map(),
         top: [],
+        topMine: [],
       };
       byCurrency.set(currency, acc);
     }
     return acc;
   };
   const batchById = new Map((batches ?? []).map((b) => [b.id, b]));
+  const compareMine = (a: Expense, b: Expense) =>
+    myShareOf(b, meId) - myShareOf(a, meId) || compareTop(a, b);
   const countedBatches = new Set<number>();
   for (const e of expenses) {
     const batch =
@@ -126,6 +140,7 @@ export function summarize(
     if (mine) {
       acc.myShareCents += mine.owedCents;
       acc.myPaidCents += mine.paidCents;
+      if (mine.owedCents > 0) pushTop(acc.topMine, e, compareMine);
       if (mine.owedCents !== 0) {
         acc.byCategory.set(e.category, (acc.byCategory.get(e.category) ?? 0) + mine.owedCents);
       }

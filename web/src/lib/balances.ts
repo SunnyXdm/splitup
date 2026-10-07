@@ -236,6 +236,55 @@ export function myGrossBalances(sync: SyncData): GrossBalance[] {
   );
 }
 
+/**
+ * Default currency first, then the rest alphabetically — a stable order.
+ * Never rank currencies by raw magnitude: ₹100 and $100 aren't comparable.
+ */
+export function orderByCurrency<T extends { currency: string }>(list: T[], primary: string): T[] {
+  const rank = (c: string) => (c === primary ? 0 : 1);
+  return [...list].sort(
+    (a, b) =>
+      rank(a.currency) - rank(b.currency) ||
+      (a.currency < b.currency ? -1 : a.currency > b.currency ? 1 : 0),
+  );
+}
+
+export interface PersonBalance {
+  userId: number;
+  currency: string;
+  /** + means this person owes me; − means I owe them. Never zero. */
+  netCents: number;
+}
+
+/**
+ * My open balance with each person, per currency (zero nets excluded) —
+ * the per-person rows behind myGrossBalances. Ordered by currency, then by
+ * the size of the balance (largest first), then userId.
+ */
+export function myPersonBalances(sync: SyncData): PersonBalance[] {
+  const me = sync.me.id;
+  const perPerson = new Map<string, PersonBalance>();
+  for (const t of allTransfers(sync)) {
+    let other: number;
+    let sign: number;
+    if (t.toUserId === me) [other, sign] = [t.fromUserId, 1];
+    else if (t.fromUserId === me) [other, sign] = [t.toUserId, -1];
+    else continue;
+    const key = `${t.currency}\u0000${other}`;
+    const entry = perPerson.get(key) ?? { userId: other, currency: t.currency, netCents: 0 };
+    entry.netCents += sign * t.cents;
+    perPerson.set(key, entry);
+  }
+  return [...perPerson.values()]
+    .filter((p) => p.netCents !== 0)
+    .sort(
+      (a, b) =>
+        (a.currency < b.currency ? -1 : a.currency > b.currency ? 1 : 0) ||
+        Math.abs(b.netCents) - Math.abs(a.netCents) ||
+        a.userId - b.userId,
+    );
+}
+
 /** + means the world owes me; per currency, zero entries excluded. */
 export function myTotalBalance(sync: SyncData): CurrencyAmount[] {
   return netVersus(sync, () => true);

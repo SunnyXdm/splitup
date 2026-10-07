@@ -31,6 +31,8 @@ export default function GroupSummary({
         sync={sync}
         summaries={summaries}
         scope="group"
+        range={range}
+        groupId={groupId}
         onSelect={onSelect}
         emptyText={
           filters.range === 'all'

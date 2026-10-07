@@ -26,8 +26,8 @@ export default function ArchivedGroups() {
     return (
       <div className="flex flex-col gap-4 pb-6">
         <Skeleton className="h-11 w-40 rounded-full" />
-        <Skeleton className="h-20 rounded-[28px]" />
-        <Skeleton className="h-20 rounded-[28px]" />
+        <Skeleton className="h-20 rounded-card" />
+        <Skeleton className="h-20 rounded-card" />
       </div>
     );
   }
@@ -43,7 +43,7 @@ export default function ArchivedGroups() {
       />
 
       {groups.length === 0 ? (
-        <Empty className="rounded-[28px] bg-card py-12">
+        <Empty className="rounded-card bg-card py-12">
           <EmptyHeader>
             <EmptyMedia variant="icon" className="rounded-full">
               <Archive />
@@ -59,10 +59,10 @@ export default function ArchivedGroups() {
           {groups.map((g) => {
             const open = myOpenGroupBalances(sync, g.id);
             return (
-              <div key={g.id} className="flex flex-col gap-3 rounded-[28px] bg-card p-4">
+              <div key={g.id} className="flex flex-col gap-3 rounded-card bg-card p-4">
                 <Link
                   to={`/groups/${g.id}`}
-                  className="-m-2 flex items-center gap-4 rounded-[22px] p-2 transition-colors hover:bg-secondary"
+                  className="-m-2 flex items-center gap-4 rounded-panel p-2 transition-colors hover:bg-secondary"
                 >
                   <span
                     className="flex size-12 shrink-0 items-center justify-center rounded-full bg-background text-2xl"
@@ -79,12 +79,12 @@ export default function ArchivedGroups() {
                   <MyGroupBalance balances={open} />
                 </Link>
                 <div className="flex items-center gap-3">
-                  <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+                  <span className="min-w-0 flex-1 text-sm text-muted-foreground">
                     {open.length > 0 ? 'You still have a balance here' : null}
                   </span>
                   <Button
                     variant="outline"
-                    className="h-9 rounded-full px-4"
+                    size="pill"
                     disabled={!online}
                     onClick={() => toggleArchive(g, false)}
                   >

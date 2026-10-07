@@ -69,6 +69,7 @@ export default function FilteredHistory({
         people={people}
         showGroupFilter={showGroupFilter}
         resultCount={sorted.length}
+        countFor={(f) => filterExpenses(sync, expenses, { ...f, q: filters.q }).length}
         autoFocus={autoFocus}
         placeholder={placeholder}
       />

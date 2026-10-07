@@ -3,6 +3,7 @@ import {
   friendBalance,
   groupBalances,
   myGrossBalances,
+  myPersonBalances,
   myTotalBalance,
   pairwiseForExpense,
   suggestSettlements,
@@ -587,6 +588,32 @@ describe('myGrossBalances', () => {
 
   it('is empty when every person balance is zero', () => {
     expect(myGrossBalances(makeSync({}))).toEqual([]);
+  });
+});
+
+describe('myPersonBalances', () => {
+  it('lists each open person balance with its direction, largest first', () => {
+    const sync = makeSync({
+      friendIds: [2, 3],
+      expenses: [
+        makeExpense({
+          shares: [
+            { userId: 2, paidCents: 100, owedCents: 0 },
+            { userId: 1, paidCents: 0, owedCents: 100 },
+          ],
+        }),
+        makeExpense({
+          shares: [
+            { userId: 1, paidCents: 300, owedCents: 0 },
+            { userId: 3, paidCents: 0, owedCents: 300 },
+          ],
+        }),
+      ],
+    });
+    expect(myPersonBalances(sync)).toEqual([
+      { userId: 3, currency: 'USD', netCents: 300 },
+      { userId: 2, currency: 'USD', netCents: -100 },
+    ]);
   });
 });
 

@@ -93,6 +93,8 @@ describe('summarize', () => {
       { category: 'food', cents: 1000 },
     ]);
     expect(inr.top.map((e) => e.id)).toEqual([hotel.id, dinner.id, notMine.id]);
+    // Ranked by MY share; bills I'm not part of are left out.
+    expect(inr.topMine.map((e) => e.id)).toEqual([hotel.id, dinner.id]);
   });
 
   it('a payments-only currency has zero spending', () => {

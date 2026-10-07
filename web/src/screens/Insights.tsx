@@ -34,7 +34,7 @@ export default function Insights() {
       <div className="flex flex-col gap-4 pb-6">
         <Skeleton className="h-4 w-24 rounded-full" />
         <Skeleton className="h-12 w-56 rounded-full" />
-        <Skeleton className="h-56 rounded-[28px]" />
+        <Skeleton className="h-56 rounded-card" />
       </div>
     );
   }
@@ -79,7 +79,7 @@ export default function Insights() {
             <Button
               variant="outline"
               size="icon-lg"
-              className="size-10 rounded-full"
+              className="size-11 rounded-full"
               aria-label="Previous month"
               disabled={month <= earliest}
               onClick={() => go(-1)}
@@ -89,7 +89,7 @@ export default function Insights() {
             <Button
               variant="outline"
               size="icon-lg"
-              className="size-10 rounded-full"
+              className="size-11 rounded-full"
               aria-label="Next month"
               disabled={month >= thisMonth}
               onClick={() => go(1)}
@@ -110,6 +110,7 @@ export default function Insights() {
         sync={sync}
         summaries={summaries}
         scope="personal"
+        range={range}
         onSelect={(e) => {
           setEditing(e);
           setExpenseOpen(true);

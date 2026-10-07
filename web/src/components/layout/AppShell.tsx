@@ -3,10 +3,10 @@ import { Link, matchPath, useLocation } from 'react-router';
 import {
   Activity as ActivityIcon,
   CircleUserRound,
+  House,
   Plus,
   Search,
   UserRound,
-  Users,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import DraftsSheet from '@/components/expense/DraftsSheet';
@@ -23,14 +23,17 @@ import { useSyncData } from '@/lib/queries';
 import { cn } from '@/lib/utils';
 
 const TABS = [
-  { to: '/', label: 'Groups', icon: Users },
+  { to: '/', label: 'Home', icon: House },
   { to: '/friends', label: 'Friends', icon: UserRound },
   { to: '/activity', label: 'Activity', icon: ActivityIcon },
   { to: '/account', label: 'Account', icon: CircleUserRound },
 ] as const;
 
+const HOME_CHILDREN = /^\/(groups|recurring|insights|search)(\/|$)/;
+
 function isTabActive(to: string, pathname: string): boolean {
-  if (to === '/') return pathname === '/' || pathname.startsWith('/groups');
+  // Home owns its overview pages too (groups, recurring bills, insights, search).
+  if (to === '/') return pathname === '/' || HOME_CHILDREN.test(pathname);
   return pathname === to || pathname.startsWith(`${to}/`);
 }
 
@@ -123,7 +126,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                     aria-current={active ? 'page' : undefined}
                     aria-label={tabLabel(to, label)}
                     className={cn(
-                      'relative rounded-full px-3 py-1.5 text-sm transition-colors',
+                      'relative flex min-h-11 items-center rounded-full px-3 text-sm transition-colors',
                       active
                         ? 'font-medium text-foreground'
                         : 'text-muted-foreground hover:text-foreground',
@@ -174,6 +177,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <main
           className={cn(
             'mx-auto w-full max-w-3xl px-4 pt-6 md:pt-28 md:pb-16',
+            // Home goes two-column on wide screens.
+            pathname === '/' && 'lg:max-w-5xl',
             // Clear the tab bar (3.5rem) + the FAB poking above it, with room to spare.
             chromeless
               ? 'pb-[calc(2rem+env(safe-area-inset-bottom))]'

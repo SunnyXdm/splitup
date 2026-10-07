@@ -1,12 +1,22 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
-import { EllipsisVertical, Pause, PencilLine, Play, Repeat, Trash2 } from 'lucide-react';
+import {
+  CalendarClock,
+  EllipsisVertical,
+  Pause,
+  PencilLine,
+  Play,
+  Plus,
+  Repeat,
+  Trash2,
+} from 'lucide-react';
 import { CategoryIcon } from '@/components/common/CategoryIcon';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import { todayISO } from '@/components/expense/money-input';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { PageHeader } from '@/components/layout/PageHeader';
+import { DueBillsRow } from '@/components/recurring/DueToAdd';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -50,14 +60,14 @@ export default function Recurring() {
   const [params] = useSearchParams();
   const [editing, setEditing] = useState<RecurringRule | undefined>();
   const [editOpen, setEditOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(false);
   const [deleting, setDeleting] = useState<RecurringRule | null>(null);
 
   if (!sync) {
     return (
       <div className="flex flex-col gap-4 pb-6">
-        <Skeleton className="h-4 w-24 rounded-full" />
-        <Skeleton className="h-10 w-56 rounded-full" />
-        <Skeleton className="h-24 rounded-[28px]" />
+        <Skeleton className="h-11 w-56 rounded-full" />
+        <Skeleton className="h-24 rounded-card" />
       </div>
     );
   }
@@ -78,13 +88,18 @@ export default function Recurring() {
   return (
     <div className="flex flex-col gap-6 pb-6">
       <PageHeader
-        eyebrow="Recurring bills"
-        documentTitle="Recurring bills"
-        title={group ? `${group.emoji} ${group.name}` : 'Rent, bills & subscriptions'}
-        titleClassName="sm:text-3xl"
+        eyebrow={group ? `${group.emoji} ${group.name}` : undefined}
+        title="Recurring bills"
+        actions={
+          <Button variant="outline" size="pill" onClick={() => setNewOpen(true)}>
+            <Plus data-icon="inline-start" aria-hidden="true" />
+            New
+          </Button>
+        }
         description={
           <>
-            When a bill is due it waits in “Due to add” on Home — nothing is added without you.
+            Rent, utilities and subscriptions. When one falls due it waits under &ldquo;Bills
+            due&rdquo; on Home — nothing is recorded without you.
             {group ? (
               <>
                 {' '}
@@ -97,16 +112,18 @@ export default function Recurring() {
         }
       />
 
+      <DueBillsRow sync={sync} showManageLink={false} />
+
       {rules.length === 0 ? (
-        <Empty className="rounded-[28px] bg-card py-12">
+        <Empty className="rounded-card bg-card py-12">
           <EmptyHeader>
             <EmptyMedia variant="icon" className="rounded-full">
               <Repeat />
             </EmptyMedia>
             <EmptyTitle>No recurring bills yet</EmptyTitle>
             <EmptyDescription>
-              Add an expense and set <strong>Repeat</strong> to weekly, monthly or yearly — rent,
-              utilities and subscriptions then show up here.
+              Tap <strong>New</strong>, then set <strong>Repeat</strong> to weekly, monthly or
+              yearly — rent, utilities and subscriptions then show up here.
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -133,6 +150,10 @@ export default function Recurring() {
         groupId={editing?.groupId ?? null}
         rule={editing}
       />
+      {/* TODO(expense-form owner): open this with Repeat preset to "monthly"
+          (e.g. a `defaultRepeat` prop on ExpenseForm). Until then "New" opens
+          the regular add-expense form and the person picks Repeat themselves. */}
+      <ExpenseForm open={newOpen} onOpenChange={setNewOpen} groupId={group?.id ?? null} />
       <DeleteRuleDialog rule={deleting} onClose={() => setDeleting(null)} />
     </div>
   );
@@ -154,8 +175,8 @@ function RuleList({
   const today = todayISO();
   return (
     <section className="flex flex-col gap-3">
-      <span className="eyebrow">{title}</span>
-      <ul className="flex flex-col divide-y divide-border rounded-[28px] bg-card">
+      <h2 className="px-1 text-sm font-medium text-muted-foreground">{title}</h2>
+      <ul className="flex flex-col divide-y divide-border/60 rounded-card bg-card">
         {rules.map((rule) => (
           <RuleRow
             key={rule.id}
@@ -190,6 +211,10 @@ function RuleRow({
   const owner = sync.users.find((u) => u.id === rule.createdBy)?.name ?? 'Someone';
   const blocker = ruleBlocker(rule, sync);
   const editable = onEdit !== undefined;
+  // Occurrences that fell due but aren't recorded yet (only mine reach my inbox).
+  const waiting = (sync.recurring?.pending ?? [])
+    .filter((p) => p.ruleId === rule.id)
+    .sort((a, b) => (a.dueDate < b.dueDate ? -1 : 1));
 
   const togglePause = () => {
     update.mutate(
@@ -203,31 +228,39 @@ function RuleRow({
   };
 
   return (
-    <li className="flex items-center gap-3 p-4">
+    <li className="flex items-start gap-3 p-4">
       <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-background">
         <CategoryIcon category={t.category} className="size-5 text-foreground/70" />
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <p className="truncate font-medium">
-          {t.description}
-          <span className="text-muted-foreground"> · </span>
-          <span className="tabular-nums">{formatMoney(t.amountCents, t.currency)}</span>
-        </p>
-        <p className="truncate text-sm text-muted-foreground">
+        <div className="flex items-start gap-3">
+          <p className="min-w-0 flex-1 font-medium break-words">{t.description}</p>
+          <p className="shrink-0 font-medium tabular-nums">
+            {formatMoney(t.amountCents, t.currency)}
+          </p>
+        </div>
+        <p className="text-sm text-muted-foreground">
           {cadenceLabel(rule.cadence, rule.interval)} · {scopeLabel(rule, sync)}
+          {!editable ? ` · set up by ${owner}` : null}
         </p>
+        {waiting.length > 0 ? (
+          <p className="flex items-center gap-1.5 text-sm font-medium text-warning">
+            <CalendarClock className="size-4 shrink-0" aria-hidden="true" />
+            Not recorded yet · due{' '}
+            {waiting.map((p) => shortDate(p.dueDate, today)).join(', ')}
+          </p>
+        ) : null}
         <p className="text-sm">
           {rule.paused ? (
             <span className="font-medium text-muted-foreground">Paused</span>
           ) : (
             <>
-              <span className="text-muted-foreground">Next due </span>
+              <span className="text-muted-foreground">Next on </span>
               {shortDate(rule.nextDue, today)}
             </>
           )}
-          {!editable ? <span className="text-muted-foreground"> · set up by {owner}</span> : null}
         </p>
-        {editable && blocker ? <p className="text-sm text-owing">{blocker}</p> : null}
+        {editable && blocker ? <p className="text-sm text-warning">{blocker}</p> : null}
       </div>
       {editable ? (
         <DropdownMenu>
@@ -236,7 +269,7 @@ function RuleRow({
               <Button
                 variant="ghost"
                 size="icon-lg"
-                className="size-10 shrink-0 rounded-full"
+                className="-mt-1 size-11 shrink-0 rounded-full"
                 disabled={!online || update.isPending}
               />
             }

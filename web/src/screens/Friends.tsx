@@ -1,7 +1,16 @@
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
-import { Check, ChevronRight, Clock, HeartHandshake, Link2, UserRoundPlus, X } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  HeartHandshake,
+  Link2,
+  Search,
+  UserRoundPlus,
+} from 'lucide-react';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,15 +23,17 @@ import {
 } from '@/components/ui/empty';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { FormSheet } from '@/components/common/FormSheet';
-import { AnimatedMoney } from '@/components/common/MoneyText';
+import { MoneyText } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { ApiError, errorMessage } from '@/lib/api';
-import { friendBalance } from '@/lib/balances';
+import { myPersonBalances, orderByCurrency, type CurrencyAmount } from '@/lib/balances';
+import { isGuest } from '@/lib/guests';
 import {
   useAcceptFriendRequest,
   useAddFriend,
@@ -30,24 +41,94 @@ import {
   useDeleteFriendRequest,
   useSyncData,
 } from '@/lib/queries';
+import { normalizeText } from '@/lib/search';
 import type { FriendRequests, User } from '@/lib/types';
+import { useParamState } from '@/lib/use-history-filters';
 import { EntranceScope } from '@/components/common/Entrance';
 import { useEnterItem } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 
+type Show = 'all' | 'owed' | 'owe';
+const SHOWS = ['all', 'owed', 'owe'] as const;
+
+const SHOW_LABELS: Record<Show, string> = { all: 'All', owed: 'Owe you', owe: 'You owe' };
+
+interface PersonRow {
+  user: User;
+  /** Open balances with me, default currency first; + = they owe me. */
+  balances: CurrencyAmount[];
+}
+
+/**
+ * Friends: requests, then everyone with their balance. ?show=owed|owe (the
+ * Home hero's two totals link here) narrows the list to one direction,
+ * largest first, and also lists people from shared groups who aren't
+ * friends — so the list adds up to the hero's total.
+ */
 export default function Friends() {
   const { data: sync } = useSyncData();
   const [addOpen, setAddOpen] = useState(false);
+  const [show, setShow] = useParamState<Show>('show', SHOWS, 'all');
+  const [query, setQuery] = useState('');
 
   if (!sync) return <FriendsSkeleton />;
 
+  const primary = sync.me.defaultCurrency;
+  const byUser = new Map<number, CurrencyAmount[]>();
+  for (const p of myPersonBalances(sync)) {
+    const list = byUser.get(p.userId) ?? [];
+    list.push({ currency: p.currency, netCents: p.netCents });
+    byUser.set(p.userId, list);
+  }
+  const rowFor = (user: User): PersonRow => ({
+    user,
+    balances: orderByCurrency(byUser.get(user.id) ?? [], primary),
+  });
+  const friendIds = new Set(sync.friendIds);
   const friends = sync.friendIds
     .map((fid) => sync.users.find((u) => u.id === fid))
     .filter((u): u is User => u !== undefined)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(rowFor);
+
+  const sign = show === 'owed' ? 1 : -1;
+  const inDirection = (r: PersonRow) => r.balances.some((b) => Math.sign(b.netCents) === sign);
+  // Largest first within the default currency, then other currencies (stable).
+  const byAmount = (a: PersonRow, b: PersonRow) => {
+    const lead = (r: PersonRow) => {
+      const own = r.balances.find((x) => Math.sign(x.netCents) === sign);
+      return own?.currency === primary ? Math.abs(own.netCents) : -1;
+    };
+    return lead(b) - lead(a) || a.user.name.localeCompare(b.user.name);
+  };
+  const others =
+    show === 'all'
+      ? []
+      : [...byUser.keys()]
+          .filter((id) => !friendIds.has(id) && id !== sync.me.id)
+          .map((id) => sync.users.find((u) => u.id === id))
+          .filter((u): u is User => u !== undefined)
+          .map(rowFor)
+          .filter(inDirection)
+          .sort(byAmount);
+
+  const needle = normalizeText(query);
+  const matches = (r: PersonRow) =>
+    needle === '' ||
+    normalizeText(r.user.name).includes(needle) ||
+    normalizeText(r.user.email ?? '').includes(needle);
+  // A direction view lists only the amounts in that direction.
+  const onlyDirection = (r: PersonRow): PersonRow =>
+    show === 'all'
+      ? r
+      : { ...r, balances: r.balances.filter((b) => Math.sign(b.netCents) === sign) };
+  const listed = (show === 'all' ? friends : friends.filter(inDirection).sort(byAmount))
+    .filter(matches)
+    .map(onlyDirection);
+  const otherListed = others.filter(matches).map(onlyDirection);
 
   return (
-    <div className="flex flex-col gap-4 pb-6">
+    <div className="flex flex-col gap-6 pb-6">
       <PageHeader
         title="Friends"
         actions={
@@ -60,10 +141,10 @@ export default function Friends() {
         }
       />
 
-      <FriendRequestsSection requests={sync.friendRequests} />
+      <IncomingRequests requests={sync.friendRequests} />
 
       {friends.length === 0 ? (
-        <Empty className="rounded-[28px] bg-card py-12">
+        <Empty className="rounded-card bg-card py-12">
           <EmptyHeader>
             <EmptyMedia variant="icon" className="rounded-full">
               <HeartHandshake />
@@ -74,43 +155,100 @@ export default function Friends() {
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <Button className="h-10 rounded-full px-5" onClick={() => setAddOpen(true)}>
+            <Button size="cta" onClick={() => setAddOpen(true)}>
               <UserRoundPlus data-icon="inline-start" aria-hidden="true" />
               Add friend
             </Button>
           </EmptyContent>
         </Empty>
       ) : (
-        <FriendList>
-          {friends.map((u, i) => {
-            const entries = friendBalance(sync, u.id).filter((b) => b.netCents !== 0);
-            return (
-              <FriendRow key={u.id} index={i} to={`/friends/${u.id}`}>
-                <UserAvatar user={u} />
-                <span className="min-w-0 flex-1 truncate font-medium">{u.name}</span>
-                <span className="flex shrink-0 flex-col items-end gap-0.5">
-                  {entries.length === 0 ? (
-                    <span className="text-sm text-muted-foreground">settled up</span>
-                  ) : (
-                    entries.map((b) => (
-                      <span
-                        key={b.currency}
-                        className={`text-sm font-medium tabular-nums transition-colors duration-(--dur-base) ${b.netCents > 0 ? 'text-owed' : 'text-owing'}`}
-                      >
-                        {b.netCents > 0 ? 'owes you ' : 'you owe '}
-                        <AnimatedMoney cents={b.netCents} currency={b.currency} />
-                      </span>
-                    ))
-                  )}
-                </span>
-                <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-              </FriendRow>
-            );
-          })}
-        </FriendList>
+        <section aria-label="Your friends" className="flex flex-col gap-3">
+          {friends.length > 3 ? <FriendSearch value={query} onChange={setQuery} /> : null}
+          <div role="group" aria-label="Show" className="flex flex-wrap gap-2">
+            {SHOWS.map((s) => (
+              <button
+                key={s}
+                type="button"
+                aria-pressed={show === s}
+                onClick={() => setShow(s)}
+                className={cn(
+                  'hit-area relative h-9 rounded-full border border-border bg-card px-4 text-sm font-medium transition-colors outline-none focus-visible:ring-3 focus-visible:ring-focus-ring',
+                  show === s
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {SHOW_LABELS[s]}
+              </button>
+            ))}
+          </div>
+
+          {listed.length === 0 ? (
+            <p className="rounded-card bg-card px-6 py-8 text-center text-muted-foreground">
+              {needle !== ''
+                ? `No friends match “${query.trim()}”.`
+                : show === 'owed'
+                  ? 'No friends owe you right now.'
+                  : 'You don’t owe any friends right now.'}
+            </p>
+          ) : (
+            <FriendList>
+              {listed.map((r, i) => (
+                <FriendRow key={r.user.id} index={i} to={`/friends/${r.user.id}`} row={r} />
+              ))}
+            </FriendList>
+          )}
+
+          {otherListed.length > 0 ? (
+            <div className="flex flex-col gap-2 pt-3">
+              <h2 className="px-1 text-sm font-medium text-muted-foreground">
+                Others in your groups
+              </h2>
+              <div className="flex flex-col divide-y divide-border/60 rounded-card bg-card px-4">
+                {otherListed.map((r) => (
+                  <div key={r.user.id} className="flex min-h-16 items-center gap-3 py-3">
+                    <PersonCells row={r} note={isGuest(r.user) ? 'Guest' : 'Not a friend yet'} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </section>
       )}
 
+      <SentRequests requests={sync.friendRequests} />
+
       <AddFriendSheet open={addOpen} onOpenChange={setAddOpen} />
+    </div>
+  );
+}
+
+function FriendSearch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="relative">
+      <Label htmlFor="friend-search" className="sr-only">
+        Search friends
+      </Label>
+      <Search
+        className="pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2 text-muted-foreground"
+        aria-hidden="true"
+      />
+      <Input
+        id="friend-search"
+        type="search"
+        autoComplete="off"
+        enterKeyHint="search"
+        value={value}
+        placeholder="Search friends"
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && value !== '') {
+            e.preventDefault();
+            onChange('');
+          }
+        }}
+        className="h-12 rounded-full border-transparent bg-card pr-4 pl-11 text-base shadow-level-1 md:text-sm dark:bg-card [&::-webkit-search-cancel-button]:hidden"
+      />
     </div>
   );
 }
@@ -119,14 +257,14 @@ export default function Friends() {
 function FriendList({ children }: { children: ReactNode }) {
   return (
     <EntranceScope id="friends">
-      <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
+      <div className="flex flex-col divide-y divide-border/60 rounded-card bg-card px-4">
         {children}
       </div>
     </EntranceScope>
   );
 }
 
-function FriendRow({ index, to, children }: { index: number; to: string; children: ReactNode }) {
+function FriendRow({ index, to, row }: { index: number; to: string; row: PersonRow }) {
   const enter = useEnterItem(index);
   return (
     <Link
@@ -134,12 +272,46 @@ function FriendRow({ index, to, children }: { index: number; to: string; childre
       className={cn('flex min-h-16 items-center gap-3 py-3', enter.className)}
       style={enter.style}
     >
-      {children}
+      <PersonCells row={row} />
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
     </Link>
   );
 }
 
-function AddFriendSheet({
+/** Avatar · name (+ note) · balance per currency: amount over its direction words. */
+function PersonCells({ row, note }: { row: PersonRow; note?: string }) {
+  return (
+    <>
+      <UserAvatar user={row.user} />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="line-clamp-2 font-medium break-words">{row.user.name}</span>
+        {note ? <span className="text-sm text-muted-foreground">{note}</span> : null}
+      </span>
+      <span className="flex shrink-0 flex-col items-end gap-1">
+        {row.balances.length === 0 ? (
+          <span className="text-sm text-muted-foreground">settled up</span>
+        ) : (
+          row.balances.map((b) => (
+            <span key={b.currency} className="flex flex-col items-end leading-tight">
+              <MoneyText
+                signed
+                animate
+                cents={b.netCents}
+                currency={b.currency}
+                className="font-medium"
+              />
+              <span className="text-sm text-muted-foreground">
+                {b.netCents > 0 ? 'owes you' : 'you owe'}
+              </span>
+            </span>
+          ))
+        )}
+      </span>
+    </>
+  );
+}
+
+export function AddFriendSheet({
   open,
   onOpenChange,
 }: {
@@ -252,104 +424,138 @@ function AddFriendSheet({
   );
 }
 
-/** Pending requests: incoming (Accept / Decline) and my outgoing (Cancel). */
-function FriendRequestsSection({ requests }: { requests: FriendRequests | undefined }) {
-  const online = useOnline();
+function useRequestActions() {
   const accept = useAcceptFriendRequest();
   const remove = useDeleteFriendRequest();
-  const incoming = requests?.incoming ?? [];
-  const outgoing = requests?.outgoing ?? [];
-  if (incoming.length === 0 && outgoing.length === 0) return null;
-
   const busy = (id: number) =>
     (accept.isPending && accept.variables === id) || (remove.isPending && remove.variables === id);
+  return { accept, remove, busy };
+}
+
+/** Incoming requests: who it is (name + full email), then Accept / Ignore. */
+function IncomingRequests({ requests }: { requests: FriendRequests | undefined }) {
+  const online = useOnline();
+  const { accept, remove, busy } = useRequestActions();
+  const incoming = requests?.incoming ?? [];
+  if (incoming.length === 0) return null;
 
   return (
-    <section className="flex flex-col gap-3" aria-label="Friend requests">
-      {incoming.length > 0 ? (
-        <div className="flex flex-col gap-2">
-          <span className="px-1 text-sm font-medium text-muted-foreground">
-            Friend requests
-          </span>
-          <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
-            {incoming.map((r) => (
-              <div key={r.id} className="flex min-h-16 items-center gap-3 py-3">
-                <UserAvatar user={r.user} />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate font-medium">{r.user.name}</span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    wants to be your friend
-                  </span>
-                </span>
-                <Button
-                  size="icon-lg"
-                  variant="outline"
-                  className="size-10 rounded-full"
-                  aria-label={`Decline ${r.user.name}`}
-                  disabled={!online || busy(r.id)}
-                  onClick={() =>
-                    remove.mutate(r.id, { onError: (err) => toast.error(errorMessage(err)) })
-                  }
-                >
-                  <X aria-hidden="true" />
-                </Button>
-                <Button
-                  size="icon-lg"
-                  className="size-10 rounded-full"
-                  aria-label={`Accept ${r.user.name}`}
-                  disabled={!online || busy(r.id)}
-                  onClick={() =>
-                    accept.mutate(r.id, {
-                      onSuccess: ({ user }) => toast.success(`${user.name} is now your friend`),
-                      onError: (err) =>
-                        toast.error(
-                          err instanceof ApiError && err.status === 404
-                            ? 'That request is no longer available.'
-                            : errorMessage(err),
-                        ),
-                    })
-                  }
-                >
-                  {busy(r.id) && accept.isPending ? <Spinner /> : <Check aria-hidden="true" />}
-                </Button>
+    <section aria-labelledby="friend-requests-title" className="flex flex-col gap-2">
+      <h2 id="friend-requests-title" className="px-1 text-sm font-medium text-muted-foreground">
+        Friend requests ({incoming.length})
+      </h2>
+      <ul className="flex flex-col divide-y divide-border/60 rounded-card bg-card px-4">
+        {incoming.map((r) => (
+          <li key={r.id} className="flex flex-col gap-3 py-4">
+            <div className="flex items-start gap-3">
+              <UserAvatar user={r.user} />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="font-medium break-words">{r.user.name}</span>
+                {r.user.email ? (
+                  <span className="text-sm break-all text-muted-foreground">{r.user.email}</span>
+                ) : null}
+                <span className="text-sm text-muted-foreground">wants to be your friend</span>
               </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
+            </div>
+            <div className="flex gap-2 pl-12">
+              <Button
+                size="pill"
+                disabled={!online || busy(r.id)}
+                aria-label={`Accept ${r.user.name}`}
+                onClick={() =>
+                  accept.mutate(r.id, {
+                    onSuccess: ({ user }) => toast.success(`${user.name} is now your friend`),
+                    onError: (err) =>
+                      toast.error(
+                        err instanceof ApiError && err.status === 404
+                          ? 'That request is no longer available.'
+                          : errorMessage(err),
+                      ),
+                  })
+                }
+              >
+                {busy(r.id) && accept.isPending ? (
+                  <Spinner data-icon="inline-start" />
+                ) : (
+                  <Check data-icon="inline-start" aria-hidden="true" />
+                )}
+                Accept
+              </Button>
+              <Button
+                variant="outline"
+                size="pill"
+                disabled={!online || busy(r.id)}
+                aria-label={`Ignore ${r.user.name}`}
+                onClick={() =>
+                  remove.mutate(r.id, {
+                    onSuccess: () => toast('Request ignored'),
+                    onError: (err) => toast.error(errorMessage(err)),
+                  })
+                }
+              >
+                Ignore
+              </Button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
 
-      {outgoing.length > 0 ? (
-        <div className="flex flex-col gap-2">
-          <span className="px-1 text-sm font-medium text-muted-foreground">Sent requests</span>
-          <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
-            {outgoing.map((r) => (
-              <div key={r.id} className="flex min-h-14 items-center gap-3 py-3">
-                <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-background text-muted-foreground">
-                  <Clock className="size-4" aria-hidden="true" />
-                </span>
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-sm font-medium">{r.email}</span>
-                  <span className="text-xs text-muted-foreground">Pending</span>
-                </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="rounded-full"
-                  aria-label={`Cancel request to ${r.email}`}
-                  disabled={!online || busy(r.id)}
-                  onClick={() =>
-                    remove.mutate(r.id, {
-                      onSuccess: () => toast('Request cancelled'),
-                      onError: (err) => toast.error(errorMessage(err)),
-                    })
-                  }
-                >
-                  Cancel
-                </Button>
-              </div>
-            ))}
-          </div>
-        </div>
+/** Requests I sent that are still pending, folded behind a count. */
+function SentRequests({ requests }: { requests: FriendRequests | undefined }) {
+  const online = useOnline();
+  const { remove, busy } = useRequestActions();
+  const [open, setOpen] = useState(false);
+  const outgoing = requests?.outgoing ?? [];
+  if (outgoing.length === 0) return null;
+
+  return (
+    <section className="flex flex-col gap-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="sent-requests"
+        onClick={() => setOpen((v) => !v)}
+        className="flex min-h-12 items-center gap-3 rounded-full px-4 text-muted-foreground transition-colors outline-none hover:bg-card hover:text-foreground focus-visible:ring-3 focus-visible:ring-focus-ring"
+      >
+        <Clock className="size-5 shrink-0" aria-hidden="true" />
+        <span className="flex-1 text-left">Sent requests ({outgoing.length})</span>
+        <ChevronDown
+          className={cn('size-5 shrink-0 transition-transform', open && 'rotate-180')}
+          aria-hidden="true"
+        />
+      </button>
+      {open ? (
+        <ul
+          id="sent-requests"
+          className="flex flex-col divide-y divide-border/60 rounded-card bg-card px-4"
+        >
+          {outgoing.map((r) => (
+            <li key={r.id} className="flex min-h-16 items-center gap-3 py-3">
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="break-all">{r.email}</span>
+                <span className="text-sm text-muted-foreground">Waiting for them to accept</span>
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-full px-3"
+                aria-label={`Cancel request to ${r.email}`}
+                disabled={!online || busy(r.id)}
+                onClick={() =>
+                  remove.mutate(r.id, {
+                    onSuccess: () => toast('Request cancelled'),
+                    onError: (err) => toast.error(errorMessage(err)),
+                  })
+                }
+              >
+                Cancel
+              </Button>
+            </li>
+          ))}
+        </ul>
       ) : null}
     </section>
   );
@@ -359,7 +565,7 @@ function FriendsSkeleton() {
   return (
     <div className="flex flex-col gap-4 pb-6">
       <Skeleton className="h-11 w-40 rounded-full" />
-      <Skeleton className="h-64 rounded-[28px]" />
+      <Skeleton className="h-64 rounded-card" />
     </div>
   );
 }
