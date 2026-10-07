@@ -16,9 +16,23 @@
  *   node migrate-cross-scope-payments.cjs <db-path>          # dry-run (read-only)
  *   node migrate-cross-scope-payments.cjs <db-path> --apply  # write replacements
  *
+ * Only LEGACY payments are touched: non-group, two-person, not part of a
+ * settle-up batch (settlement_batch_id IS NULL — batched settles are already
+ * recorded per scope) and not themselves a replacement. Routing is the app's
+ * current settle-stable two-line sweep (web/src/lib/balances.ts
+ * suggestSettlements), for planning and verification alike. A pair whose
+ * replacements would land a row on someone who has left that group is
+ * skipped (left as-is) — nobody may move a departed member's group balance.
+ *
  * Replacements keep the original's date/created_at/created_by (new ids, notes
- * "migrated from #<id>"); originals are soft-deleted. Original activity rows
- * stay untouched — their denormalized summaries remain true.
+ * "migrated from #<id>[+#<id>…]"); originals are soft-deleted and marked
+ * superseded_by the first replacement (the server never offers them for
+ * restore). Every write records a revision whose actor is the replacement's
+ * creator — the person the migrated settle-up is attributed to. Original
+ * activity rows stay untouched — their denormalized summaries remain true.
+ *
+ * Idempotent: originals are deleted and replacements are never re-planned, so
+ * a second run finds nothing to migrate.
  */
 'use strict';
 
@@ -66,37 +80,39 @@ function groupNets(expenses, groupId) {
   return out;
 }
 
-function takeLargest(entries) {
-  let best = entries[0];
-  for (const e of entries) {
-    if (e.cents > best.cents || (e.cents === best.cents && e.userId < best.userId)) best = e;
-  }
-  return best;
-}
-
+/**
+ * Port of web/src/lib/balances.ts suggestSettlements: the settle-stable
+ * "two-line sweep" — per currency, creditors and debtors each lined up by
+ * ascending userId, walked with two pointers.
+ */
 function suggestSettlements(nets) {
   const byCurrency = new Map();
   for (const b of nets) {
-    if (!byCurrency.has(b.currency)) byCurrency.set(b.currency, []);
-    byCurrency.get(b.currency).push(b);
+    if (!byCurrency.has(b.currency)) byCurrency.set(b.currency, new Map());
+    const m = byCurrency.get(b.currency);
+    m.set(b.userId, (m.get(b.userId) ?? 0) + b.net);
   }
   const transfers = [];
   for (const currency of [...byCurrency.keys()].sort()) {
     const creditors = [];
     const debtors = [];
-    for (const b of byCurrency.get(currency)) {
-      if (b.net > 0) creditors.push({ userId: b.userId, cents: b.net });
-      else if (b.net < 0) debtors.push({ userId: b.userId, cents: -b.net });
+    for (const [userId, net] of byCurrency.get(currency)) {
+      if (net > 0) creditors.push({ userId, cents: net });
+      else if (net < 0) debtors.push({ userId, cents: -net });
     }
-    while (creditors.length > 0 && debtors.length > 0) {
-      const d = takeLargest(debtors);
-      const cr = takeLargest(creditors);
+    creditors.sort((a, b) => a.userId - b.userId);
+    debtors.sort((a, b) => a.userId - b.userId);
+    let i = 0;
+    let j = 0;
+    while (i < debtors.length && j < creditors.length) {
+      const d = debtors[i];
+      const cr = creditors[j];
       const cents = Math.min(d.cents, cr.cents);
-      transfers.push({ fromUserId: d.userId, toUserId: cr.userId, cents, currency });
+      if (cents > 0) transfers.push({ fromUserId: d.userId, toUserId: cr.userId, cents, currency });
       d.cents -= cents;
       cr.cents -= cents;
-      if (d.cents === 0) debtors.splice(debtors.indexOf(d), 1);
-      if (cr.cents === 0) creditors.splice(creditors.indexOf(cr), 1);
+      if (d.cents === 0) i += 1;
+      if (cr.cents === 0) j += 1;
     }
   }
   return transfers;
@@ -115,18 +131,25 @@ function directNet(expenses, a, b, currency) {
   return net;
 }
 
-/** Constituents of `friend`'s balance with `me` (+ = friend owes me). */
+/**
+ * Constituents of `friend`'s balance with `me` (+ = friend owes me) — port of
+ * web/src/lib/settle.ts pairConstituents: an edge in a currency other than
+ * its group's (legacy) can't be settled in-group and folds into direct.
+ */
 function pairConstituents(expenses, liveGroupIds, meId, friendId, currency) {
   const out = [];
+  let direct = directNet(expenses, meId, friendId, currency);
   for (const gid of liveGroupIds) {
     for (const t of suggestSettlements(groupNets(expenses, gid))) {
       if (t.currency !== currency) continue;
-      if (t.fromUserId === friendId && t.toUserId === meId) out.push({ scope: gid, cents: t.cents });
-      else if (t.fromUserId === meId && t.toUserId === friendId)
-        out.push({ scope: gid, cents: -t.cents });
+      let cents;
+      if (t.fromUserId === friendId && t.toUserId === meId) cents = t.cents;
+      else if (t.fromUserId === meId && t.toUserId === friendId) cents = -t.cents;
+      else continue;
+      if (currency !== groupCurrency.get(gid)) direct += cents;
+      else out.push({ scope: gid, cents });
     }
   }
-  const direct = directNet(expenses, meId, friendId, currency);
   if (direct !== 0) out.push({ scope: null, cents: direct });
   return out;
 }
@@ -196,9 +219,21 @@ const users = new Map(db.prepare('SELECT id, name FROM users').all().map((u) => 
 const name = (id) => users.get(id) ?? `#${id}`;
 const fmt = (c) => (c / 100).toFixed(2);
 
-const liveGroups = db.prepare('SELECT id, name FROM groups WHERE deleted_at IS NULL').all();
+const liveGroups = db
+  .prepare('SELECT id, name, currency FROM groups WHERE deleted_at IS NULL ORDER BY id')
+  .all();
 const liveGroupIds = liveGroups.map((g) => g.id);
 const groupName = new Map(liveGroups.map((g) => [g.id, g.name]));
+const groupCurrency = new Map(liveGroups.map((g) => [g.id, g.currency]));
+const membersOf = new Map(liveGroupIds.map((gid) => [gid, new Set()]));
+for (const m of db.prepare('SELECT group_id, user_id FROM group_members').all()) {
+  membersOf.get(m.group_id)?.add(m.user_id);
+}
+
+const expenseColumns = new Set(db.prepare('PRAGMA table_info(expenses)').all().map((c) => c.name));
+const hasBatches = expenseColumns.has('settlement_batch_id');
+const hasSuperseded = expenseColumns.has('superseded_by');
+const MIGRATED = /^migrated from #\d+(?:\+#\d+)*$/;
 
 const shareStmt = db.prepare(
   'SELECT user_id, paid_cents, owed_cents FROM expense_shares WHERE expense_id = ? ORDER BY user_id',
@@ -206,7 +241,8 @@ const shareStmt = db.prepare(
 function loadExpenses() {
   return db
     .prepare(
-      `SELECT id, group_id, currency, date, category, notes, is_payment, created_by, created_at
+      `SELECT id, group_id, currency, date, category, notes, is_payment, created_by, created_at,
+         ${hasBatches ? 'settlement_batch_id' : 'NULL AS settlement_batch_id'}
        FROM expenses WHERE deleted_at IS NULL ORDER BY created_at, id`,
     )
     .all()
@@ -220,6 +256,7 @@ function loadExpenses() {
       isPayment: r.is_payment === 1,
       createdBy: r.created_by,
       createdAt: r.created_at,
+      batchId: r.settlement_batch_id,
       shares: shareStmt.all(r.id).map((s) => ({
         userId: s.user_id,
         paidCents: s.paid_cents,
@@ -234,10 +271,18 @@ function loadExpenses() {
 
 const original = loadExpenses();
 
-// Group every non-group payment by unordered pair + currency.
+/** A legacy cross-scope payment: direct, two-person, unbatched, not a replacement. */
+const isLegacyPayment = (e) =>
+  e.groupId === null &&
+  e.isPayment &&
+  e.shares.length === 2 &&
+  e.batchId == null &&
+  !MIGRATED.test(e.notes ?? '');
+
+// Group every legacy payment by unordered pair + currency.
 const byPair = new Map(); // "a|b|currency" (a<b) -> payment rows
 for (const e of original) {
-  if (e.groupId !== null || !e.isPayment || e.shares.length !== 2) continue;
+  if (!isLegacyPayment(e)) continue;
   const [x, y] = e.shares.map((s) => s.userId).sort((p, q) => p - q);
   const key = `${x}|${y}|${e.currency}`;
   if (!byPair.has(key)) byPair.set(key, []);
@@ -245,12 +290,11 @@ for (const e of original) {
 }
 
 // All decompositions are computed against the SAME pre-state (today's edges,
-// with every non-group payment set aside), then applied simultaneously. For
-// settled pairs the rows cancel whole current edges, so the residual routing
-// is exactly the genuine remaining debts — verified by V2 below.
-const nonPaymentLedger = original.filter(
-  (e) => !(e.groupId === null && e.isPayment && e.shares.length === 2),
-);
+// with every legacy payment set aside — batched settles stay, they are real
+// per-scope state), then applied simultaneously. For settled pairs the rows
+// cancel whole current edges, so the residual routing is exactly the genuine
+// remaining debts — verified by V2 below.
+const nonPaymentLedger = original.filter((e) => !isLegacyPayment(e));
 
 let working = [...original];
 const plan = []; // { originals, replacements }
@@ -310,6 +354,20 @@ for (const [key, payments] of byPair) {
   if (signed !== amount) {
     console.error(`    FATAL: replacements net ${fmt(signed)} != original ${fmt(amount)}`);
     process.exit(1);
+  }
+
+  // Nobody may move a departed member's group balance (they can't see it).
+  const departed = rows.find(
+    (r) =>
+      r.groupId !== null &&
+      !(membersOf.get(r.groupId)?.has(r.payerId) && membersOf.get(r.groupId)?.has(r.recipientId)),
+  );
+  if (departed) {
+    console.log(
+      `    skipped: ${groupName.get(departed.groupId) ?? departed.groupId} row involves someone ` +
+        'who left that group — kept as-is',
+    );
+    continue;
   }
 
   // Replacements carry the pair's most recent payment's provenance.
@@ -434,7 +492,11 @@ const insertExpense = db.prepare(
 const insertShare = db.prepare(
   'INSERT INTO expense_shares (expense_id, user_id, paid_cents, owed_cents) VALUES (?, ?, ?, ?)',
 );
-const softDelete = db.prepare('UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ?');
+const softDelete = db.prepare(
+  hasSuperseded
+    ? 'UPDATE expenses SET deleted_at = ?, updated_at = ?, superseded_by = ? WHERE id = ?'
+    : 'UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ?',
+);
 // Databases that have expense revision history get a revision per write too
 // (same snapshot shape as server/src/db.ts SNAPSHOT_SQL); older ones don't.
 const hasRevisions =
@@ -446,7 +508,7 @@ const insertRevision = hasRevisions
       `INSERT INTO expense_revisions (expense_id, revision, action, actor_id, snapshot, created_at)
        SELECT e.id,
          COALESCE((SELECT MAX(r.revision) FROM expense_revisions r WHERE r.expense_id = e.id), 0) + 1,
-         ?, e.created_by,
+         ?, ?,
          json_object(
            'description', e.description, 'amountCents', e.amount_cents, 'currency', e.currency,
            'date', e.date, 'category', e.category, 'notes', e.notes, 'groupId', e.group_id,
@@ -465,6 +527,9 @@ const insertRevision = hasRevisions
 
 // Inside the BEGIN IMMEDIATE opened at startup.
 for (const { originals, replacements } of plan) {
+  // One actor for the whole pair: the person the replacements are attributed to.
+  const actor = replacements[0].createdBy;
+  let firstReplacementId = null;
   for (const r of replacements) {
     const info = insertExpense.run(
       r.groupId,
@@ -481,11 +546,13 @@ for (const { originals, replacements } of plan) {
     for (const s of r.shares) {
       insertShare.run(id, s.userId, s.paidCents, s.owedCents);
     }
-    insertRevision?.run('created', now, id);
+    firstReplacementId ??= id;
+    insertRevision?.run('created', actor, now, id);
   }
   for (const o of originals) {
-    softDelete.run(now, now, o.id);
-    insertRevision?.run('deleted', now, o.id);
+    if (hasSuperseded) softDelete.run(now, now, firstReplacementId, o.id);
+    else softDelete.run(now, now, o.id);
+    insertRevision?.run('deleted', actor, now, o.id);
   }
 }
 

@@ -101,3 +101,21 @@ export function batchScopeHint(rows: Expense[]): string | null {
   if (!scopes.has(null)) return `Split across ${groups} groups`;
   return `Split across ${groups} ${groups === 1 ? 'group' : 'groups'} and direct`;
 }
+
+/** Who may undo a settle-up: the two people the cash moved between, or its recorder. */
+export const isBatchParticipant = (batch: SettlementBatch, meId: number): boolean =>
+  batch.payerId === meId || batch.payeeId === meId || batch.createdBy === meId;
+
+/**
+ * What tapping a payment row does: a settle-up row opens its receipt (when the
+ * batch is known) and is otherwise inert — its rows only move together, so a
+ * plain delete would always be refused. Only legacy unbatched payments offer
+ * delete.
+ */
+export function paymentRowAction(
+  e: Expense,
+  batchesById: Map<number, SettlementBatch>,
+): 'receipt' | 'delete' | 'none' {
+  if (e.settlementBatchId == null) return 'delete';
+  return batchesById.has(e.settlementBatchId) ? 'receipt' : 'none';
+}

@@ -112,8 +112,10 @@ app.get('/', (c) => {
     else sharesByExpense.set(s.expense_id, [s]);
   }
 
-  // Settle-up batches I took part in. Rows are limited to the expenses I can
-  // see (a deleted group's rows drop out); a batch with none left is omitted.
+  // Settle-up batches with at least one row I can see — including ones I only
+  // watch as a co-member (the client shows those read-only; only the payer,
+  // payee or creator may undo). Rows are limited to the expenses I can see (a
+  // deleted group's rows drop out); a batch with none left is omitted.
   const rowsByBatch = new Map<number, number[]>();
   for (const e of [...expenseRows].sort((a, b) => a.id - b.id)) {
     if (e.settlement_batch_id == null) continue;
@@ -122,13 +124,12 @@ app.get('/', (c) => {
     else rowsByBatch.set(e.settlement_batch_id, [e.id]);
   }
   const settlementBatches = db
-    .prepare<[number, number, number], SettlementBatchRow>(
+    .prepare<[string], SettlementBatchRow>(
       `SELECT * FROM settlement_batches
-       WHERE deleted_at IS NULL AND (payer_id = ? OR payee_id = ? OR created_by = ?)
+       WHERE deleted_at IS NULL AND id IN (SELECT value FROM json_each(?))
        ORDER BY date DESC, id DESC`,
     )
-    .all(me.id, me.id, me.id)
-    .filter((b) => rowsByBatch.has(b.id))
+    .all(JSON.stringify([...rowsByBatch.keys()]))
     .map((b) => toSettlementBatch(b, rowsByBatch.get(b.id)!));
 
   // users = me + friends + co-members (+ share-holders of visible expenses, so

@@ -21,6 +21,7 @@ import {
   removeGuest,
   renameGuest,
 } from '../lib/guests';
+import { befriendPair } from '../lib/friends';
 import { notifyAddedToGroup } from '../lib/notify-events';
 import { archiveGroup, archivedAtFor, clearGroupPrefs, unarchiveGroup } from '../lib/archive';
 
@@ -167,14 +168,7 @@ app.post('/:id/members', async (c) => {
     if (added) {
       // New member befriends every existing member (both directions), matching
       // the invite-join behavior so cross-group balances stay coherent.
-      const addFriend = db.prepare(
-        'INSERT OR IGNORE INTO friendships (user_id, friend_id, created_at) VALUES (?, ?, ?)',
-      );
-      for (const memberId of realMemberIds(id)) {
-        if (memberId === userId) continue;
-        addFriend.run(userId, memberId, now);
-        addFriend.run(memberId, userId, now);
-      }
+      for (const memberId of realMemberIds(id)) befriendPair(userId, memberId, now);
       const addedUser = db
         .prepare<[number], { name: string }>('SELECT name FROM users WHERE id = ?')
         .get(userId)!;

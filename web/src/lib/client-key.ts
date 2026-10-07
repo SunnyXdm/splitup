@@ -25,3 +25,31 @@ export function createClientKeyTracker(): (payload: unknown) => string {
     return last.key;
   };
 }
+
+/**
+ * Keeps the exact request of a submission whose outcome is unknown, so a
+ * retry resends it byte for byte — same idempotency key AND same body, even
+ * if a refetch has since changed derived parts (a settle's watermark or row
+ * breakdown). `inputs` are the user-visible fields only: while they are
+ * unchanged, `request` returns the kept request; once the user edits any of
+ * them, a fresh request is built with a fresh key. After a definite answer
+ * (success, or a 4xx rejection) call `reset` so the next tap starts over.
+ */
+export function createRetryMemo<R>(): {
+  request: (inputs: unknown, build: (clientKey: string) => R) => R;
+  reset: () => void;
+} {
+  let kept: { inputs: string; request: R } | null = null;
+  return {
+    request(inputs, build) {
+      const json = JSON.stringify(inputs);
+      if (kept === null || kept.inputs !== json) {
+        kept = { inputs: json, request: build(newClientKey()) };
+      }
+      return kept.request;
+    },
+    reset() {
+      kept = null;
+    },
+  };
+}

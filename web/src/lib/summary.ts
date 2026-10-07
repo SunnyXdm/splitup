@@ -1,12 +1,20 @@
 import { groupExpenses } from './balances';
 import { inDayRange, type DayRange } from './search';
-import type { Category, Expense, SyncData } from './types';
+import type { Category, Expense, SettlementBatch, SyncData } from './types';
 
 /**
  * Spending summaries ("what did this trip cost me?"). Spending is CONSUMPTION:
  * my share is Σ my owedCents on real expenses — not my net balance, which
  * also moves with who paid. Payments (settle-ups) are never spending; they're
  * reported separately as sent/received. Currencies are never summed together.
+ *
+ * Sent/received is CASH. A settle-up batch is recorded as several payment
+ * rows (one per group slice, plus offsetting counter rows), so its rows are
+ * not the cash: when the batch is known, it counts once as its net
+ * payer → payee amount, on the batch's date. Legacy unbatched payments count
+ * row by row, as before. The group summary deliberately passes no batches:
+ * inside one group, the batch's row there IS what settled that group's
+ * balance, so a group view shows its allocation, not the cross-group cash.
  */
 
 export interface CategoryTotal {
@@ -65,14 +73,14 @@ export function summarize(
   expenses: Expense[],
   meId: number,
   range: DayRange = { from: null, to: null },
+  batches?: SettlementBatch[],
 ): CurrencySummary[] {
   const byCurrency = new Map<string, Acc>();
-  for (const e of expenses) {
-    if (!inDayRange(String(e.date ?? ''), range)) continue;
-    let acc = byCurrency.get(e.currency);
+  const accFor = (currency: string): Acc => {
+    let acc = byCurrency.get(currency);
     if (!acc) {
       acc = {
-        currency: e.currency,
+        currency,
         totalCents: 0,
         expenseCount: 0,
         myShareCents: 0,
@@ -82,8 +90,28 @@ export function summarize(
         byCategory: new Map(),
         top: [],
       };
-      byCurrency.set(e.currency, acc);
+      byCurrency.set(currency, acc);
     }
+    return acc;
+  };
+  const batchById = new Map((batches ?? []).map((b) => [b.id, b]));
+  const countedBatches = new Set<number>();
+  for (const e of expenses) {
+    const batch =
+      e.isPayment && e.settlementBatchId != null ? batchById.get(e.settlementBatchId) : undefined;
+    if (batch) {
+      // Once per settle-up, as the cash that moved — whichever row we meet.
+      if (countedBatches.has(batch.id)) continue;
+      countedBatches.add(batch.id);
+      if (!inDayRange(String(batch.date ?? ''), range)) continue;
+      if (batch.payerId !== meId && batch.payeeId !== meId) continue;
+      const acc = accFor(batch.currency);
+      if (batch.payerId === meId) acc.paymentsSentCents += batch.amountCents;
+      else acc.paymentsReceivedCents += batch.amountCents;
+      continue;
+    }
+    if (!inDayRange(String(e.date ?? ''), range)) continue;
+    const acc = accFor(e.currency);
     const mine = e.shares?.find((s) => s.userId === meId);
     if (e.isPayment) {
       if (mine) {
@@ -132,7 +160,11 @@ function memo(sync: SyncData, key: string, compute: () => CurrencySummary[]) {
   return hit;
 }
 
-/** One group's summary for a day range, memoized per sync snapshot. */
+/**
+ * One group's summary for a day range, memoized per sync snapshot. Payments
+ * count as the rows recorded in this group (their allocation to it), not as
+ * whole settle-up batches — see the note at the top.
+ */
 export function groupSummary(sync: SyncData, groupId: number, range: DayRange): CurrencySummary[] {
   return memo(sync, `g:${groupId}:${range.from ?? ''}:${range.to ?? ''}`, () =>
     summarize(groupExpenses(sync, groupId), sync.me.id, range),
@@ -154,7 +186,7 @@ export function myExpenses(sync: SyncData): Expense[] {
 /** Everything I'm part of within a day range, memoized per snapshot. */
 export function personalSummary(sync: SyncData, range: DayRange): CurrencySummary[] {
   return memo(sync, `me:${range.from ?? ''}:${range.to ?? ''}`, () =>
-    summarize(myExpenses(sync), sync.me.id, range),
+    summarize(myExpenses(sync), sync.me.id, range, sync.settlementBatches),
   );
 }
 

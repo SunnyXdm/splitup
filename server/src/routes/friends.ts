@@ -7,6 +7,7 @@ import { friendBody, idParam, inviteTokenParam } from '../validate';
 import { rateLimit } from '../security';
 import { readJson, toUser } from '../lib/wire';
 import { areFriends, recordActivity } from '../lib/expense';
+import { befriendPair, pendingOutgoingCount } from '../lib/friends';
 import { notifyFriendAccepted, notifyFriendRequest } from '../lib/notify-events';
 
 interface FriendInviteRow {
@@ -31,32 +32,19 @@ function friendInviteOr404(rawToken: string): FriendInviteRow {
 }
 
 /**
- * Create the friendship in both directions and drop any pending requests
- * between the two; each side gets its own (actor-private) activity row, only
- * when the friendship is new. Returns whether it is new.
+ * Create the friendship (befriendPair: both directions, pending requests
+ * dropped); each side gets its own (actor-private) activity row, only when the
+ * friendship is new. Returns whether it is new.
  */
 function befriend(me: UserRow, friend: UserRow): boolean {
   return db.transaction(() => {
-    const now = nowIso();
-    const insert = db.prepare(
-      'INSERT OR IGNORE INTO friendships (user_id, friend_id, created_at) VALUES (?, ?, ?)',
-    );
-    const added = insert.run(me.id, friend.id, now).changes > 0;
-    insert.run(friend.id, me.id, now);
-    deleteRequests(me, friend);
+    const added = befriendPair(me.id, friend.id);
     if (added) {
       recordActivity(me.id, 'friend_added', null, null, `You became friends with ${friend.name}`);
       recordActivity(friend.id, 'friend_added', null, null, `You became friends with ${me.name}`);
     }
     return added;
   })();
-}
-
-/** Remove pending requests in either direction between two users. */
-function deleteRequests(a: UserRow, b: UserRow): void {
-  const del = db.prepare('DELETE FROM friend_requests WHERE from_id = ? AND to_email = ?');
-  if (b.email) del.run(a.id, b.email.toLowerCase());
-  if (a.email) del.run(b.id, a.email.toLowerCase());
 }
 
 /** A pending request from `fromId` addressed to `to`'s email. */
@@ -140,12 +128,9 @@ app.post('/', rateLimit(30, 'session', 60 * 60 * 1000), async (c) => {
     .prepare('SELECT 1 FROM friend_requests WHERE from_id = ? AND to_email = ?')
     .get(me.id, email);
   if (!duplicate) {
-    const { n } = db
-      .prepare<[number], { n: number }>(
-        'SELECT COUNT(*) AS n FROM friend_requests WHERE from_id = ?',
-      )
-      .get(me.id)!;
-    if (n >= MAX_PENDING_OUTGOING) {
+    // Only unresolved requests count: one answered by a friendship (from any
+    // path) no longer uses up the quota.
+    if (pendingOutgoingCount(me.id) >= MAX_PENDING_OUTGOING) {
       throw new HTTPException(429, { message: 'too many pending friend requests' });
     }
     db.prepare(

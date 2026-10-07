@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { requireAuth, type AppEnv } from '../auth';
-import { db, nowIso, type ExpenseRow, type ShareRow } from '../db';
+import { db, nowIso, supersededSql, type ExpenseRow, type ShareRow } from '../db';
 import { createExpense } from '../lib/create-expense';
 import {
   deletedExpensesQuery,
@@ -191,7 +191,8 @@ export interface DeletedExpense extends Expense {
  * Expenses deleted in the last 90 days that I could see while live: my live
  * groups' rows, and non-group rows I hold a share in. Scoped to one group
  * (404 unless I'm a member) or to rows shared with one friend. Settle-up rows
- * are left out — they come back only through their batch.
+ * are left out — they come back only through their batch — and so are
+ * payments a migration superseded (their replacements hold that cash now).
  */
 app.get('/deleted', (c) => {
   const me = c.get('user');
@@ -204,6 +205,7 @@ app.get('/deleted', (c) => {
     .prepare<unknown[], ExpenseRow>(
       `SELECT e.* FROM expenses e
        WHERE e.deleted_at IS NOT NULL AND e.deleted_at >= ? AND e.settlement_batch_id IS NULL
+         AND NOT ${supersededSql('e')}
          AND (
            e.group_id IN (
              SELECT gm.group_id FROM group_members gm
@@ -291,6 +293,14 @@ app.post('/:id/restore', async (c) => {
   if (existing.settlement_batch_id != null) {
     throw restoreConflict('part of a settle-up');
   }
+  // Replaced by migration rows that already carry this cash: bringing the
+  // original back would count it twice.
+  const superseded = db
+    .prepare<[number], { one: number }>(
+      `SELECT 1 AS one FROM expenses e WHERE e.id = ? AND ${supersededSql('e')}`,
+    )
+    .get(id);
+  if (superseded) throw restoreConflict('superseded');
   if (body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt !== existing.updated_at) {
     throw restoreConflict('conflict');
   }

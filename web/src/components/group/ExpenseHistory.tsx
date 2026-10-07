@@ -19,7 +19,7 @@ import { formatDateSafe } from '@/lib/dates';
 import { errorMessage } from '@/lib/api';
 import { formatMoney } from '@/lib/money';
 import { useDeleteExpense } from '@/lib/queries';
-import { batchScopeHint, historyEntries } from '@/lib/settlement-batches';
+import { batchScopeHint, historyEntries, paymentRowAction } from '@/lib/settlement-batches';
 import type { Expense, SettlementBatch, SyncData } from '@/lib/types';
 
 interface ExpenseHistoryProps {
@@ -27,8 +27,9 @@ interface ExpenseHistoryProps {
   /** Already-filtered expenses; the component sorts and groups them by month. */
   expenses: Expense[];
   /**
-   * Row tap on a regular expense. Payments of a settle-up open its receipt;
-   * legacy payments (no batch) open a delete confirmation.
+   * Row tap on a regular expense. Payments of a settle-up open its receipt
+   * (inert if the batch isn't synced yet); legacy payments (no batch) open a
+   * delete confirmation.
    */
   onSelect?: (expense: Expense) => void;
   /** Tag each row with its group name (or "Direct") — used on FriendDetail. */
@@ -113,16 +114,22 @@ export default function ExpenseHistory({
               }
               const e = entry.expense;
               if (e.isPayment) {
-                const batch =
-                  e.settlementBatchId != null ? batchesById.get(e.settlementBatchId) : undefined;
+                const action = paymentRowAction(e, batchesById);
                 return (
                   <PaymentRow
                     key={entry.key}
                     expense={e}
                     nameOf={nameOf}
                     tag={tagOf(e.groupId)}
-                    action={batch ? 'receipt' : 'delete'}
-                    onTap={() => (batch ? openReceipt(batch) : setPaymentToDelete(e))}
+                    action={action}
+                    onTap={() => {
+                      const batch =
+                        e.settlementBatchId != null
+                          ? batchesById.get(e.settlementBatchId)
+                          : undefined;
+                      if (action === 'receipt' && batch) openReceipt(batch);
+                      else if (action === 'delete') setPaymentToDelete(e);
+                    }}
                   />
                 );
               }
@@ -298,7 +305,7 @@ function PaymentRow({
   expense: Expense;
   nameOf: (id: number) => string;
   tag?: string;
-  action: 'receipt' | 'delete';
+  action: 'receipt' | 'delete' | 'none';
   onTap: () => void;
 }) {
   const payer = e.shares.find((s) => s.paidCents > 0);
@@ -306,13 +313,17 @@ function PaymentRow({
   return (
     <button
       type="button"
-      disabled={e.id < 0}
+      disabled={e.id < 0 || action === 'none'}
       onClick={onTap}
       className="flex min-h-14 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       aria-label={`Payment: ${payer ? nameOf(payer.userId) : 'Someone'} paid ${
         recipient ? nameOf(recipient.userId) : 'someone'
-      } ${formatMoney(e.amountCents, e.currency)}. ${
-        action === 'receipt' ? 'Tap for the receipt.' : 'Tap to delete.'
+      } ${formatMoney(e.amountCents, e.currency)}.${
+        action === 'receipt'
+          ? ' Tap for the receipt.'
+          : action === 'delete'
+            ? ' Tap to delete.'
+            : ''
       }`}
     >
       <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-background text-muted-foreground">

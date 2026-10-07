@@ -5,6 +5,7 @@ import { db, nowIso, type GroupRow } from '../db';
 import { inviteTokenParam } from '../validate';
 import { toGroup, type InvitePreview } from '../lib/wire';
 import { groupMemberIds, isMember, realMemberIds, recordActivity } from '../lib/expense';
+import { befriendPair } from '../lib/friends';
 
 interface InviteRow {
   token: string;
@@ -72,14 +73,7 @@ app.post('/:token/join', (c) => {
         me.id,
         now,
       );
-      const addFriend = db.prepare(
-        'INSERT OR IGNORE INTO friendships (user_id, friend_id, created_at) VALUES (?, ?, ?)',
-      );
-      for (const memberId of members) {
-        if (memberId === me.id) continue;
-        addFriend.run(me.id, memberId, now);
-        addFriend.run(memberId, me.id, now);
-      }
+      for (const memberId of members) befriendPair(me.id, memberId, now);
       recordActivity(me.id, 'member_joined', group.id, null, `${me.name} joined ${group.name}`);
     })();
   }

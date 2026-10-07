@@ -703,9 +703,11 @@ export function useRestoreExpense() {
           : withRestoredExpense(sync, expense),
       );
     },
+    // Like every expense write, only the last one in flight re-syncs (an
+    // earlier refetch would flicker away concurrent optimistic rows).
     onSettled: (_data, _err, vars) =>
       Promise.all([
-        qc.invalidateQueries({ queryKey: SYNC_KEY }),
+        invalidateIfLastWrite(qc),
         qc.invalidateQueries({ queryKey: [REVISIONS_KEY, vars.id] }),
         qc.invalidateQueries({ queryKey: [DELETED_KEY] }),
       ]),

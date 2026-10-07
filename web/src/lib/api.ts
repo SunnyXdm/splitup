@@ -2,11 +2,14 @@ import type { ReceiptScanResult } from './types';
 
 export class ApiError extends Error {
   status: number;
+  /** The parsed error body (e.g. `expenseId` on a 'key reused' 409), if any. */
+  data: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, data: unknown = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -42,7 +45,7 @@ export async function api<T>(
       data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
         ? data.error
         : `Request failed (${res.status})`;
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, data);
   }
   return data as T;
 }
@@ -59,6 +62,40 @@ export const isDepartedMember = (err: unknown): boolean =>
 export const isStale = (err: unknown): boolean =>
   err instanceof ApiError && err.status === 409 && err.message === 'stale';
 
+/**
+ * True when a write may or may not have reached the server: no response at
+ * all (offline, timeout, aborted) or a 5xx / gateway error. Only a definite
+ * 4xx answer means "not recorded" — after anything else, a retry must resend
+ * the SAME request (same idempotency key) so it can't be recorded twice.
+ */
+export const isAmbiguousFailure = (err: unknown): boolean =>
+  !(err instanceof ApiError) || err.status >= 500;
+
+/**
+ * A create's idempotency key already recorded something else (e.g. a draft
+ * edited after an ambiguous save): the server names it in `expenseId`.
+ */
+export const isKeyReused = (err: unknown): boolean =>
+  err instanceof ApiError && err.status === 409 && err.message === 'key reused';
+
+/** The id of the expense a reused key already recorded, when the server named it. */
+export function reusedExpenseId(err: unknown): number | null {
+  if (!isKeyReused(err)) return null;
+  const data = (err as ApiError).data;
+  return data &&
+    typeof data === 'object' &&
+    'expenseId' in data &&
+    typeof data.expenseId === 'number'
+    ? data.expenseId
+    : null;
+}
+
+/** A retried create whose original was saved, then deleted (or undone) since. */
+export const isRemovedSince = (err: unknown): boolean =>
+  err instanceof ApiError &&
+  err.status === 409 &&
+  err.message === 'already saved and later removed';
+
 /** 409 codes from POST /api/expenses/:id/restore. */
 const RESTORE_MESSAGES: Record<string, string> = {
   'already current': 'That version is already the current one.',
@@ -66,6 +103,8 @@ const RESTORE_MESSAGES: Record<string, string> = {
   'not friends': 'That version is with someone you’re no longer friends with.',
   'group currency changed': 'The group’s currency has changed since that version.',
   'version cannot be restored': 'That version can’t be restored anymore.',
+  superseded:
+    'This payment was replaced when old settle-ups were reorganized — restoring it would count it twice.',
 };
 
 /** Human copy for a failed write: known server codes get a clear sentence. */
@@ -76,6 +115,10 @@ export function errorMessage(err: unknown): string {
   }
   if (err instanceof ApiError && err.status === 409 && err.message === 'group deleted') {
     return 'One of the groups this was recorded in has been deleted.';
+  }
+  if (isKeyReused(err)) return 'This was already added — open it to edit.';
+  if (isRemovedSince(err)) {
+    return 'This was already saved, then deleted — find it in Recently deleted.';
   }
   if (err instanceof ApiError && err.status === 409 && err.message === 'part of a settle-up') {
     return 'This payment is part of a settle-up — open it and use Undo payment instead.';

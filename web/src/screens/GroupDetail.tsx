@@ -513,6 +513,8 @@ export default function GroupDetail() {
                                   nameOf(t.fromUserId),
                                   formatMoney(t.cents, t.currency),
                                   `in "${group.name}"`,
+                                  // Guests can't sign in: no sign-in link for them.
+                                  { withLink: !isGuest(usersById.get(t.fromUserId)) },
                                 ),
                               )
                             }

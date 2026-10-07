@@ -205,17 +205,21 @@ describe('POST /api/settlements batches', () => {
     assert.equal(n.n, 1);
   });
 
-  it('syncs the batch to both participants but not to a co-member', async () => {
+  it('syncs the batch to both participants, and to a co-member with only their rows', async () => {
     for (const who of ['Asha', 'Bilal']) {
       const { data } = await call(who, 'GET', '/api/sync');
       const b = data.settlementBatches.find((x: { id: number }) => x.id === batchId);
       assert.ok(b, `${who} sees the batch`);
       assert.deepEqual(b.rows, rowIds);
     }
+    // Chen sees the Goa row (group member), so he gets the batch too — limited
+    // to the rows he can see, for a read-only receipt.
     const { data } = await call('Chen', 'GET', '/api/sync');
-    assert.equal(data.settlementBatches.length, 0);
-    // Chen still sees the Goa row itself (group member), tagged with the batch id.
     assert.ok(data.expenses.some((e: { id: number }) => e.id === rowIds[0]));
+    const b = data.settlementBatches.find((x: { id: number }) => x.id === batchId);
+    assert.ok(b, 'Chen sees the batch');
+    assert.deepEqual(b.rows, [rowIds[0]]);
+    assert.equal(b.payerId, id('Asha'));
   });
 
   it('keeps the stale-watermark 409', async () => {

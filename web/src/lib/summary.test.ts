@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { firstMonth, groupSummary, personalSummary, summarize } from './summary';
-import type { Category, Expense, ExpenseShare, SyncData } from './types';
+import { makeSync } from './test-fixtures';
+import type { Category, Expense, ExpenseShare, SettlementBatch, SyncData } from './types';
 
 let idSeq = 1;
 
@@ -227,5 +228,87 @@ describe('snapshot helpers', () => {
 
   it('firstMonth is the earliest month I took part in', () => {
     expect(firstMonth(sync)).toBe('2026-08');
+  });
+});
+
+describe('settle-up batches', () => {
+  const pay = (o: {
+    groupId: number | null;
+    from: number;
+    to: number;
+    amount: number;
+    batch?: number;
+    date?: string;
+  }): Expense => ({
+    ...exp({
+      amount: o.amount,
+      isPayment: true,
+      groupId: o.groupId,
+      date: o.date,
+      shares: [
+        { userId: o.from, paidCents: o.amount, owedCents: 0 },
+        { userId: o.to, paidCents: 0, owedCents: o.amount },
+      ],
+    }),
+    settlementBatchId: o.batch ?? null,
+  });
+  const batch = (o: Partial<SettlementBatch> & { id: number }): SettlementBatch => ({
+    payerId: ME,
+    payeeId: 2,
+    amountCents: 0,
+    currency: 'INR',
+    date: '2026-10-03',
+    method: null,
+    reference: null,
+    note: null,
+    createdBy: ME,
+    createdAt: '2026-10-03T00:00:00Z',
+    rows: [],
+    ...o,
+  });
+
+  // I paid friend 2 a net 800: 1000 in group 9, offset by a 200 counter row
+  // in group 8 (2 → me). Rows alone would read as 1000 sent + 200 received.
+  const rows = [
+    pay({ groupId: 9, from: ME, to: 2, amount: 1000, batch: 50 }),
+    pay({ groupId: 8, from: 2, to: ME, amount: 200, batch: 50 }),
+  ];
+  const settle = batch({ id: 50, amountCents: 800, rows: rows.map((r) => r.id) });
+
+  it('counts a batch once, as the net cash', () => {
+    expect(summarize(rows, ME, undefined, [settle])[0]).toMatchObject({
+      paymentsSentCents: 800,
+      paymentsReceivedCents: 0,
+    });
+  });
+
+  it('keeps legacy payments and unknown batches row by row', () => {
+    const legacy = pay({ groupId: null, from: 2, to: ME, amount: 300 });
+    expect(summarize([...rows, legacy], ME)[0]).toMatchObject({
+      paymentsSentCents: 1000,
+      paymentsReceivedCents: 500,
+    });
+    expect(summarize([...rows, legacy], ME, undefined, [settle])[0]).toMatchObject({
+      paymentsSentCents: 800,
+      paymentsReceivedCents: 300,
+    });
+  });
+
+  it('filters a batch by its own date', () => {
+    const range = { from: '2026-11-01', to: '2026-11-30' };
+    expect(summarize(rows, ME, range, [settle])).toEqual([]);
+  });
+
+  it('personal summary uses the batches; a group summary shows its allocation', () => {
+    const base = makeSync();
+    const sync: SyncData = {
+      ...base,
+      groups: [{ ...base.groups[0], id: 9, currency: 'INR', memberIds: [ME, 2] }],
+      expenses: rows,
+      settlementBatches: [settle],
+    };
+    const all = { from: null, to: null };
+    expect(personalSummary(sync, all)[0]).toMatchObject({ paymentsSentCents: 800 });
+    expect(groupSummary(sync, 9, all)[0]).toMatchObject({ paymentsSentCents: 1000 });
   });
 });

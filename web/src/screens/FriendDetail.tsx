@@ -55,11 +55,14 @@ export default function FriendDetail() {
 
   if (!sync) return <FriendDetailSkeleton />;
 
-  const friend = sync.users.find((u) => u.id === friendId);
+  // Only actual friends: sync.users also holds co-members, guests and former
+  // share holders, none of whom has a friend page.
+  const isFriend = sync.friendIds.includes(friendId);
+  const friend = isFriend ? sync.users.find((u) => u.id === friendId) : undefined;
   if (!friend || friend.id === sync.me.id) {
     // Right after accepting a friend the cached dataset may not include them
     // yet — show the skeleton while the refetch is in flight, not "not found".
-    if (syncFetching && friend?.id !== sync.me.id) return <FriendDetailSkeleton />;
+    if (syncFetching && friendId !== sync.me.id) return <FriendDetailSkeleton />;
     return (
       <Empty className="rounded-[28px] bg-card py-16">
         <EmptyHeader>

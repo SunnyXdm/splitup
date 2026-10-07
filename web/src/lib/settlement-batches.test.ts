@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { batchScopeHint, historyEntries, methodLabel, netCash } from './settlement-batches';
+import {
+  batchScopeHint,
+  historyEntries,
+  isBatchParticipant,
+  methodLabel,
+  netCash,
+  paymentRowAction,
+} from './settlement-batches';
 import type { Expense, SettlementBatch } from './types';
 
 const ME = 1;
@@ -146,5 +153,38 @@ describe('netCash', () => {
   it('labels methods', () => {
     expect(methodLabel('upi')).toBe('UPI');
     expect(methodLabel(null)).toBeNull();
+  });
+});
+
+describe('settle-up permissions', () => {
+  const b = {
+    id: 7,
+    payerId: 1,
+    payeeId: 2,
+    amountCents: 100,
+    currency: 'INR',
+    date: '2026-10-01',
+    method: null,
+    reference: null,
+    note: null,
+    createdBy: 2,
+    createdAt: '2026-10-01T00:00:00Z',
+    rows: [70],
+  } satisfies SettlementBatch;
+  const row = (settlementBatchId: number | null) =>
+    ({ id: 70, isPayment: true, settlementBatchId }) as Expense;
+
+  it('only the payer, payee or recorder may undo', () => {
+    expect(isBatchParticipant(b, 1)).toBe(true);
+    expect(isBatchParticipant(b, 2)).toBe(true);
+    expect(isBatchParticipant({ ...b, createdBy: 3 }, 3)).toBe(true);
+    expect(isBatchParticipant(b, 4)).toBe(false);
+  });
+
+  it('never offers plain delete for a settle-up row', () => {
+    const known = new Map([[7, b]]);
+    expect(paymentRowAction(row(7), known)).toBe('receipt');
+    expect(paymentRowAction(row(7), new Map())).toBe('none');
+    expect(paymentRowAction(row(null), known)).toBe('delete');
   });
 });

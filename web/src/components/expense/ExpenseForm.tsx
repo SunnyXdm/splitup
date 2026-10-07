@@ -27,7 +27,14 @@ import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { CATEGORIES, CATEGORY_META } from '@/lib/categories';
-import { errorMessage, isConflict, scanErrorMessage, scanReceipt } from '@/lib/api';
+import {
+  errorMessage,
+  isConflict,
+  isKeyReused,
+  isRemovedSince,
+  scanErrorMessage,
+  scanReceipt,
+} from '@/lib/api';
 import { createClientKeyTracker, newClientKey } from '@/lib/client-key';
 import { currentDrafts, removeDraft, saveAutosave, saveDraft, useDrafts } from '@/lib/draft-store';
 import { autosaveScopeKey, createDraft, type Draft, type DraftsState } from '@/lib/drafts';
@@ -576,7 +583,16 @@ function FormFields({
       onError: (err: Error) => {
         // Not saved after all: keep autosaving what's on screen.
         finished.current = false;
+        if (draft && isKeyReused(err)) {
+          // An earlier (ambiguous) save of this draft did go through, and the
+          // draft was edited since. Keep the draft and these edits; the user
+          // edits the recorded expense instead.
+          toast.error('This draft was already added — open it to edit.');
+          void qc.invalidateQueries({ queryKey: SYNC_KEY });
+          return;
+        }
         toast.error(errorMessage(err));
+        if (isRemovedSince(err)) void qc.invalidateQueries({ queryKey: SYNC_KEY });
         if (isConflict(err)) {
           // Our copy is outdated: close and pull the latest so a reopen
           // starts from what the other person saved.

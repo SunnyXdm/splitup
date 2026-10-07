@@ -1,8 +1,20 @@
 import { toast } from 'sonner';
 
-/** `amountText` is preformatted — a single amount or "₹500 + $20" for multi-currency. */
-export function reminderText(name: string, amountText: string, context: string): string {
-  return `Hey ${name}! Friendly reminder from Splitup — you owe me ${amountText} ${context}. Settle up here: ${window.location.origin}`;
+/**
+ * `amountText` is preformatted — a single amount or "₹500 + $20" for
+ * multi-currency. A guest can't sign in, so their reminder is plain text with
+ * no link to an app they can't use (`withLink: false`).
+ */
+export function reminderText(
+  name: string,
+  amountText: string,
+  context: string,
+  { withLink = true }: { withLink?: boolean } = {},
+): string {
+  const text = `Hey ${name}! Friendly reminder — you owe me ${amountText} ${context}.`;
+  return withLink
+    ? `Hey ${name}! Friendly reminder from Splitup — you owe me ${amountText} ${context}. Settle up here: ${window.location.origin}`
+    : text;
 }
 
 /**

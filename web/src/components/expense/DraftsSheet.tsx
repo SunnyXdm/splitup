@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { FieldDescription } from '@/components/ui/field';
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
-import { errorMessage } from '@/lib/api';
+import { errorMessage, isKeyReused, isRemovedSince } from '@/lib/api';
 import { formatDateSafe } from '@/lib/dates';
 import { currentDrafts, removeDraft, useDrafts } from '@/lib/draft-store';
 import { draftsInScope, validateDraft, type Draft, type DraftScope } from '@/lib/drafts';
@@ -116,9 +116,19 @@ function DraftsBody({
         removeDraft(meId, draft.id);
         added += 1;
       } catch (err) {
-        toast.error(`Couldn’t add “${draft.values.description}”`, {
-          description: errorMessage(err),
-        });
+        if (isKeyReused(err)) {
+          // An earlier save of this draft went through before it was edited:
+          // keep the draft (and its edits) for the user to sort out.
+          toast.error(`“${draft.values.description || 'Untitled'}” was already added`, {
+            description: 'This draft was already added — open it to edit.',
+          });
+          void qc.invalidateQueries({ queryKey: SYNC_KEY });
+        } else {
+          toast.error(`Couldn’t add “${draft.values.description}”`, {
+            description: errorMessage(err),
+          });
+          if (isRemovedSince(err)) void qc.invalidateQueries({ queryKey: SYNC_KEY });
+        }
         break;
       }
     }

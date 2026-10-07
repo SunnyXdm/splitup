@@ -16,8 +16,13 @@ import {
   recurringPatchBody,
   type RecurringTemplate,
 } from '../validate';
-import { createExpense, expenseByClientKey } from '../lib/create-expense';
-import { areFriends, checkExpenseInput, expenseWire, memberGroupOr404 } from '../lib/expense';
+import {
+  createExpense,
+  expenseIdByClientKey,
+  REMOVED_SINCE,
+  replayedExpense,
+} from '../lib/create-expense';
+import { areFriends, checkExpenseInput, memberGroupOr404 } from '../lib/expense';
 import { firstOnOrAfter, intentUserIds, occurrenceDate, type Schedule } from '../lib/recurrence';
 import {
   assertParticipantsCurrent,
@@ -90,7 +95,24 @@ app.post('/', async (c) => {
       )
       .get(me.id, body.clientKey);
     if (prior) {
-      const first = expenseByClientKey(me.id, occurrenceClientKey(prior.id, prior.anchor_date));
+      // A replay hands back only what I can still see, and only as live.
+      if (prior.deleted_at !== null) {
+        throw new HTTPException(409, { message: REMOVED_SINCE });
+      }
+      if (prior.group_id !== null) memberGroupOr404(prior.group_id, me.id);
+      const firstId = expenseIdByClientKey(
+        me.id,
+        occurrenceClientKey(prior.id, prior.anchor_date),
+      );
+      let first = null;
+      if (firstId !== null) {
+        try {
+          first = replayedExpense(me, firstId);
+        } catch {
+          // The bill stands; its first expense was removed (or hidden) since.
+          first = null;
+        }
+      }
       return c.json({ rule: toRecurringRule(prior), expense: first });
     }
   }
@@ -234,11 +256,10 @@ app.post('/occurrences/:id/add', async (c) => {
   const clientKey = occurrenceClientKey(rule.id, occurrence.due_date);
   // Idempotent: a repeated add (double tap, retried request) returns the
   // expense the first one recorded.
-  const prior =
-    occurrence.expense_id !== null
-      ? expenseWire(occurrence.expense_id)
-      : expenseByClientKey(me.id, clientKey);
-  if (prior) {
+  // A replay hands back only what I can still see, and only as live.
+  const priorId = occurrence.expense_id ?? expenseIdByClientKey(me.id, clientKey);
+  if (priorId !== null) {
+    const prior = replayedExpense(me, priorId);
     markAdded(occurrence.id, prior.id);
     return c.json({ expense: prior, occurrenceId: occurrence.id });
   }

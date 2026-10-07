@@ -115,6 +115,15 @@ CREATE TABLE IF NOT EXISTS friend_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_friend_requests_to ON friend_requests(to_email);
 `);
+// Requests between people who have since become friends (e.g. via a group
+// join, before every friendship path cleared them) are moot: drop them.
+// friendships rows exist in both directions, so this covers either sender.
+db.exec(`
+DELETE FROM friend_requests WHERE EXISTS (
+  SELECT 1 FROM friendships f JOIN users u ON u.id = f.friend_id
+  WHERE f.user_id = friend_requests.from_id AND lower(u.email) = friend_requests.to_email
+);
+`);
 
 // Older databases predate soft-deleted groups; add the column in place.
 const groupCols = db.prepare("PRAGMA table_info(groups)").all() as { name: string }[];
@@ -161,6 +170,61 @@ if (!expenseCols.some((c) => c.name === 'settlement_batch_id')) {
 db.exec(
   'CREATE INDEX IF NOT EXISTS idx_expenses_settlement_batch ON expenses(settlement_batch_id) WHERE settlement_batch_id IS NOT NULL',
 );
+
+// Superseded payments: scripts/migrate-cross-scope-payments.cjs replaced some
+// legacy payments with per-scope rows (notes "migrated from #12+#13") and
+// soft-deleted the originals. Restoring an original would count that cash
+// twice, so it records the replacement in superseded_by and such rows are
+// never offered or accepted for restore.
+if (!expenseCols.some((c) => c.name === 'superseded_by')) {
+  db.exec('ALTER TABLE expenses ADD COLUMN superseded_by INTEGER REFERENCES expenses(id)');
+}
+
+/** The ids a migration replacement's notes name ("migrated from #12+#13"), else []. */
+export function migratedFromIds(notes: string | null): number[] {
+  const m = /^migrated from (#\d+(?:\+#\d+)*)$/.exec(notes ?? '');
+  return m ? m[1].split('+').map((part) => Number(part.slice(1))) : [];
+}
+
+/**
+ * Marks every soft-deleted original that a migration replacement names (and
+ * that isn't marked yet) as superseded by that replacement — preferring a live
+ * replacement, else the lowest id. Idempotent: marked rows are skipped.
+ */
+export function backfillSuperseded(): void {
+  const replacements = db
+    .prepare<[], { id: number; notes: string | null; deleted_at: string | null }>(
+      `SELECT id, notes, deleted_at FROM expenses
+       WHERE is_payment = 1 AND notes LIKE 'migrated from #%'
+       ORDER BY (deleted_at IS NOT NULL), id`,
+    )
+    .all();
+  const mark = db.prepare(
+    `UPDATE expenses SET superseded_by = ?
+     WHERE id = ? AND deleted_at IS NOT NULL AND superseded_by IS NULL AND is_payment = 1`,
+  );
+  db.transaction(() => {
+    for (const r of replacements) {
+      for (const originalId of migratedFromIds(r.notes)) {
+        if (originalId !== r.id) mark.run(r.id, originalId);
+      }
+    }
+  })();
+}
+backfillSuperseded();
+
+/**
+ * SQL condition: the expenses row aliased `alias` was superseded by a
+ * migration — marked, or (should the script have run without marking) named
+ * by a replacement's "migrated from #…" notes.
+ */
+export const supersededSql = (alias: string) => `(
+  ${alias}.superseded_by IS NOT NULL OR EXISTS (
+    SELECT 1 FROM expenses rep
+    WHERE rep.is_payment = 1 AND rep.id != ${alias}.id AND rep.notes LIKE 'migrated from #%'
+      AND (rep.notes || '+') LIKE '%#' || ${alias}.id || '+%'
+  )
+)`;
 
 // Per-user group preferences. archived_at hides a finished group from that
 // user's Home only — unlike groups.deleted_at, which removes it for everyone.
@@ -375,6 +439,8 @@ export interface ExpenseRow {
   deleted_at: string | null;
   client_key: string | null;
   settlement_batch_id: number | null;
+  /** A migration replacement of this (soft-deleted) payment; never restorable. */
+  superseded_by: number | null;
 }
 export interface SettlementBatchRow {
   id: number;

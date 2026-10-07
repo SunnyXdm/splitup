@@ -4,7 +4,9 @@ import { GUEST_SUB_PREFIX } from '../auth';
 import { db, nowIso, type GroupRow, type RecurringRuleRow, type UserRow } from '../db';
 import type { RecurringTemplate } from '../validate';
 import { isMember, realMemberIds, recordActivity } from './expense';
-import { clearGroupPrefs } from './archive';
+import { clearGroupPrefs, unarchiveAffected } from './archive';
+import { befriendPair } from './friends';
+import { recordRevision } from './revisions';
 import { templateOf } from './recurring';
 
 /**
@@ -217,8 +219,13 @@ function ledgerNets(groupIds: number[]): Map<string, number> {
  *
  * - expense shares move to `me`; where both held a share in the same expense,
  *   paid and owed are summed into my row (nets add, so conservation holds);
+ * - every live expense whose split changed gets an 'updated' revision by me;
  * - settle-up batches, recurring templates and group membership follow;
- * - I befriend the group's real members, exactly like an invite join;
+ *   payments (and settle-ups) that were between me and the guest become
+ *   payments to myself and are removed, with history;
+ * - I befriend the group's real members, exactly like an invite join
+ *   (pending friend requests between us are dropped);
+ * - anyone affected who archived one of the groups gets it back;
  * - the guest row stays (history snapshots still name it) with merged_into
  *   set, and its claim links are revoked.
  *
@@ -247,6 +254,16 @@ export function mergeGuestInto(guest: UserRow, me: UserRow, group: GroupRow): vo
     ];
     const before = ledgerNets(groupIds);
     const wasMember = isMember(group.id, me.id);
+    // Live expenses whose split changes hands: each gets an 'updated' revision.
+    // (Deleted ones keep their history as is — restore maps the guest through
+    // merged_into — and a trailing 'updated' would hide that they're deleted.)
+    const rewritten = db
+      .prepare<[number], { id: number }>(
+        `SELECT e.id FROM expenses e JOIN expense_shares s ON s.expense_id = e.id
+         WHERE s.user_id = ? AND e.deleted_at IS NULL ORDER BY e.id`,
+      )
+      .all(guest.id)
+      .map((r) => r.id);
 
     // Expenses the merge touches get a fresh updated_at, so stale clients
     // (edit conflicts, settle watermarks) notice the change.
@@ -278,6 +295,53 @@ export function mergeGuestInto(guest: UserRow, me: UserRow, group: GroupRow): vo
       guest.id,
     );
 
+    // Payments between me and the guest are now payments to myself: they move
+    // no money between two people, so they (and settle-ups that were only
+    // between us) are removed, with history. Each such row nets to zero for
+    // me, so balances are untouched.
+    const selfPayments = db
+      .prepare<[number, number], { id: number }>(
+        `SELECT e.id FROM expenses e
+         WHERE e.is_payment = 1 AND e.deleted_at IS NULL
+           AND e.id IN (SELECT expense_id FROM expense_shares WHERE user_id = ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM expense_shares o WHERE o.expense_id = e.id AND o.user_id != ?
+           )
+         ORDER BY e.id`,
+      )
+      .all(me.id, me.id)
+      .map((r) => r.id)
+      .filter((id) => rewritten.includes(id));
+    const removeRow = db.prepare(
+      'UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
+    );
+    for (const id of selfPayments) {
+      removeRow.run(now, now, id);
+      recordRevision(id, 'deleted', me.id, now);
+    }
+    const selfBatches = db
+      .prepare<[number], { id: number }>(
+        `SELECT id FROM settlement_batches
+         WHERE payer_id = ? AND payee_id = payer_id AND deleted_at IS NULL`,
+      )
+      .all(me.id);
+    for (const b of selfBatches) {
+      db.prepare('UPDATE settlement_batches SET deleted_at = ? WHERE id = ?').run(now, b.id);
+      const rows = db
+        .prepare<[number], { id: number }>(
+          'SELECT id FROM expenses WHERE settlement_batch_id = ? AND deleted_at IS NULL',
+        )
+        .all(b.id);
+      for (const r of rows) {
+        removeRow.run(now, now, r.id);
+        recordRevision(r.id, 'deleted', me.id, now);
+        selfPayments.push(r.id);
+      }
+    }
+    for (const id of rewritten) {
+      if (!selfPayments.includes(id)) recordRevision(id, 'updated', me.id, now);
+    }
+
     const rules = db
       .prepare<[number], RecurringRuleRow>('SELECT * FROM recurring_rules WHERE group_id = ?')
       .all(group.id);
@@ -305,14 +369,7 @@ export function mergeGuestInto(guest: UserRow, me: UserRow, group: GroupRow): vo
         me.id,
         now,
       );
-      const addFriend = db.prepare(
-        'INSERT OR IGNORE INTO friendships (user_id, friend_id, created_at) VALUES (?, ?, ?)',
-      );
-      for (const memberId of members) {
-        if (memberId === me.id) continue;
-        addFriend.run(me.id, memberId, now);
-        addFriend.run(memberId, me.id, now);
-      }
+      for (const memberId of members) befriendPair(me.id, memberId, now);
     }
     db.prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?').run(
       group.id,
@@ -328,6 +385,10 @@ export function mergeGuestInto(guest: UserRow, me: UserRow, group: GroupRow): vo
       null,
       `${guest.name}'s expenses now belong to ${me.name}`,
     );
+
+    // My nets changed (the guest's moved onto mine): whoever archived these
+    // groups and is affected — me, or anyone left unsettled — gets them back.
+    for (const gid of groupIds) unarchiveAffected(gid, [me.id]);
 
     // Conservation: the guest's nets moved onto mine; nobody else changed.
     const expected = new Map<string, number>();

@@ -1,8 +1,11 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { requireAuth, type AppEnv } from '../auth';
-import { db, nowIso, type ExpenseRow, type SettlementBatchRow } from '../db';
-import { idParam, settlementsBody } from '../validate';
+import { db, nowIso, type ExpenseRow, type SettlementBatchRow, type UserRow } from '../db';
+import { idParam, settlementsBody, type SettlementsBody } from '../validate';
+import { KEY_REUSED, REMOVED_SINCE } from '../lib/create-expense';
+import { resolveMergedShares } from '../lib/guests';
+import { recordRevision, visibleExpenseOr404 } from '../lib/revisions';
 import {
   readJson,
   toSettlementBatch,
@@ -11,7 +14,6 @@ import {
 } from '../lib/wire';
 import { notifySettlement, notifySettlementUndone } from '../lib/notify-events';
 import { unarchiveAffected } from '../lib/archive';
-import { recordRevision } from '../lib/revisions';
 import {
   areFriends,
   assertDepartedUnchanged,
@@ -67,6 +69,54 @@ export function netCash(
     : { payerId: b, payeeId: a, amountCents: -aToB };
 }
 
+/**
+ * The original result of a replayed settle — only while I can still see every
+ * row (404 otherwise) and nothing of it was undone (409 REMOVED_SINCE). A
+ * retry must also carry the same settle: a different counterparty, currency
+ * or row set under the key is 409 KEY_REUSED, never a silent replay.
+ */
+function replaySettlement(
+  me: UserRow,
+  body: SettlementsBody,
+  rowIds: number[],
+): { expenses: Expense[]; batch: SettlementBatch | null } {
+  const rows = rowIds.map((rowId) => visibleExpenseOr404(me, rowId));
+  const batchId = rows[0].settlement_batch_id;
+  const batch =
+    batchId == null
+      ? undefined
+      : db
+          .prepare<[number], SettlementBatchRow>('SELECT * FROM settlement_batches WHERE id = ?')
+          .get(batchId);
+  if (rows.some((r) => r.deleted_at !== null) || batch?.deleted_at) {
+    throw new HTTPException(409, { message: REMOVED_SINCE });
+  }
+  const recorded = rows.map((r) => {
+    const shares = resolveMergedShares(sharesOf(r.id).map(shareLike));
+    return [
+      r.group_id,
+      shares.find((s) => s.paidCents > 0)?.userId ?? null,
+      shares.find((s) => s.owedCents > 0)?.userId ?? null,
+      r.amount_cents,
+      r.currency,
+    ];
+  });
+  const requested = body.rows.map((r) => [
+    r.groupId,
+    r.payerId,
+    r.recipientId,
+    r.amountCents,
+    body.currency,
+  ]);
+  if (JSON.stringify(recorded) !== JSON.stringify(requested)) {
+    throw new HTTPException(409, { message: KEY_REUSED, cause: { expenseId: rows[0].id } });
+  }
+  return {
+    expenses: rows.map((r) => expenseWire(r.id)),
+    batch: batchId == null ? null : settlementBatchWire(batchId),
+  };
+}
+
 const app = new Hono<AppEnv>();
 app.use(requireAuth);
 
@@ -105,17 +155,7 @@ app.post('/', async (c) => {
            AND (client_key = ? OR substr(client_key, 1, ?) = ?) ORDER BY id`,
       )
       .all(me.id, body.clientKey, body.clientKey.length + 1, `${body.clientKey}:`);
-    if (prior.length > 0) {
-      const batchId = db
-        .prepare<[number], { settlement_batch_id: number | null }>(
-          'SELECT settlement_batch_id FROM expenses WHERE id = ?',
-        )
-        .get(prior[0].id)?.settlement_batch_id;
-      return c.json({
-        expenses: prior.map((r) => expenseWire(r.id)),
-        batch: batchId == null ? null : settlementBatchWire(batchId),
-      });
-    }
+    if (prior.length > 0) return c.json(replaySettlement(me, body, prior.map((r) => r.id)));
   }
 
   if (body.counterpartyId === me.id) {

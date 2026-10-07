@@ -26,7 +26,7 @@ import { errorMessage } from '@/lib/api';
 import { formatDateSafe } from '@/lib/dates';
 import { formatMoney } from '@/lib/money';
 import { useSyncData, useUndoSettlement } from '@/lib/queries';
-import { batchScopeHint, methodLabel } from '@/lib/settlement-batches';
+import { batchScopeHint, isBatchParticipant, methodLabel } from '@/lib/settlement-batches';
 import type { SettlementBatch, SyncData } from '@/lib/types';
 
 export interface SettlementReceiptProps {
@@ -80,6 +80,9 @@ function ReceiptBody({
         : `${nameOf(batch.payerId)} paid ${nameOf(batch.payeeId)}`;
   const hint = batchScopeHint(rows);
   const pending = batch.id < 0 || rows.some((r) => r.id < 0);
+  // Co-members see settle-ups recorded in their groups, read-only: only the
+  // two people the cash moved between (or whoever recorded it) may undo.
+  const canUndo = isBatchParticipant(batch, meId);
   const details = [
     { label: 'Method', value: methodLabel(batch.method) },
     { label: 'Reference', value: batch.reference },
@@ -170,16 +173,22 @@ function ReceiptBody({
         ) : null}
       </div>
       <SheetFooter className="pt-2 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
-        <Button
-          variant="outline"
-          className="h-12 w-full rounded-full text-destructive hover:text-destructive"
-          disabled={!online || pending}
-          onClick={() => setConfirmOpen(true)}
-        >
-          <Undo2 data-icon="inline-start" aria-hidden="true" />
-          Undo payment
-        </Button>
-        {!online ? (
+        {canUndo ? (
+          <Button
+            variant="outline"
+            className="h-12 w-full rounded-full text-destructive hover:text-destructive"
+            disabled={!online || pending}
+            onClick={() => setConfirmOpen(true)}
+          >
+            <Undo2 data-icon="inline-start" aria-hidden="true" />
+            Undo payment
+          </Button>
+        ) : (
+          <p className="text-center text-xs text-muted-foreground">
+            Only {nameOf(batch.payerId)} or {nameOf(batch.payeeId)} can undo this payment.
+          </p>
+        )}
+        {canUndo && !online ? (
           <p className="text-center text-xs text-muted-foreground">
             You&rsquo;re offline — viewing only.
           </p>

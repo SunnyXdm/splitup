@@ -76,7 +76,13 @@ if (IS_PROD) {
 
 app.onError((err, c) => {
   if (err instanceof HTTPException) {
-    return c.json({ error: err.message || 'error' }, err.status);
+    // A plain-object `cause` carries extra fields for the client (e.g. the
+    // expense a reused idempotency key already recorded).
+    const extra =
+      err.cause !== null && typeof err.cause === 'object' && !(err.cause instanceof Error)
+        ? err.cause
+        : {};
+    return c.json({ ...extra, error: err.message || 'error' }, err.status);
   }
   if (err instanceof ZodError) {
     const first = err.issues[0];

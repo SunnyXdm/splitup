@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import { requireAuth, type AppEnv } from '../auth';
 import { db, nowIso } from '../db';
+import { isPublicPushEndpoint } from '../lib/push-endpoint';
 import { readJson } from '../lib/wire';
 import { vapidPublicKey } from '../notify';
 import { pushSubscriptionBody, pushUnsubscribeBody } from '../validate';
@@ -21,6 +23,10 @@ app.get('/key', (c) => c.json({ publicKey: vapidPublicKey }));
 app.post('/subscriptions', async (c) => {
   const me = c.get('user');
   const body = pushSubscriptionBody.parse(await readJson(c));
+  // The server will POST to this URL: it must resolve only to public hosts.
+  if (!(await isPublicPushEndpoint(body.endpoint))) {
+    throw new HTTPException(400, { message: 'endpoint must be a public https URL' });
+  }
   db.transaction(() => {
     db.prepare(
       `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at)

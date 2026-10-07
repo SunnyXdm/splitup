@@ -19,9 +19,9 @@ import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/com
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { errorMessage, isStale } from '@/lib/api';
+import { errorMessage, isAmbiguousFailure, isStale } from '@/lib/api';
 import { friendBalance } from '@/lib/balances';
-import { createClientKeyTracker } from '@/lib/client-key';
+import { createRetryMemo } from '@/lib/client-key';
 import { formatMoney, isCanonicalAmount, parseAmountToCents } from '@/lib/money';
 import {
   SYNC_KEY,
@@ -29,6 +29,8 @@ import {
   useExpenseWritePending,
   useSettleUp,
   useSyncData,
+  type CreateExpenseVars,
+  type SettlementInput,
 } from '@/lib/queries';
 import {
   apportionSettle,
@@ -37,7 +39,7 @@ import {
   settlementWatermark,
 } from '@/lib/settle';
 import { SETTLEMENT_METHODS } from '@/lib/settlement-batches';
-import type { ExpenseInput, SettlementMethod, SyncData, User } from '@/lib/types';
+import type { SettlementMethod, SyncData, User } from '@/lib/types';
 import { centsToInput, currencySymbol, todayISO } from './money-input';
 
 export type SettleDirection = 'i_paid' | 'they_paid';
@@ -61,6 +63,11 @@ export interface SettleUpSheetProps {
 }
 
 type Direction = SettleDirection;
+
+/** One settle submission, exactly as sent — kept for byte-identical retries. */
+type SettleRequest =
+  | { kind: 'settle'; body: SettlementInput }
+  | { kind: 'payment'; body: CreateExpenseVars };
 
 export default function SettleUpSheet({
   open,
@@ -108,7 +115,7 @@ function SettleBody({
   // watermark) don't match the server yet — recording now would 409 or route
   // against numbers that are about to change.
   const writePending = useExpenseWritePending();
-  const keyFor = useRef(createClientKeyTracker()).current;
+  const retry = useRef(createRetryMemo<SettleRequest>()).current;
 
   const [direction, setDirection] = useState<Direction>(initialDirection ?? 'i_paid');
   const [chosenCounterpartyId, setCounterpartyId] = useState<number | null>(toUserId ?? null);
@@ -257,71 +264,96 @@ function SettleBody({
   const handleSave = () => {
     setAttempted(true);
     if (amountCents === null || counterparty === null || writePending) return;
+    if (groupId === null && settleRows.length === 0) return;
 
     const callbacks = {
-      onSuccess: celebrate,
+      onSuccess: () => {
+        retry.reset();
+        celebrate();
+      },
       onError: (err: Error) => {
+        // A definite rejection means nothing was recorded: the next tap builds
+        // a fresh request. After an ambiguous failure the kept request (same
+        // key, same body) is what a retry resends, so it can't record twice.
+        if (!isAmbiguousFailure(err)) retry.reset();
         if (isStale(err)) void refreshAfterStale(counterparty.id);
         else toast.error(errorMessage(err));
       },
     };
 
-    if (groupId === null) {
-      // Friend mode: record the apportioned rows atomically.
-      if (settleRows.length === 0) return;
-      const rows = settleRows.map(({ groupId: g, payerId, recipientId, amountCents: cents }) => ({
-        groupId: g,
-        payerId,
-        recipientId,
-        amountCents: cents,
-      }));
-      const body = {
-        counterpartyId: counterparty.id,
-        currency,
-        date: todayISO(),
-        ...settlementWatermark(sync, counterparty.id),
-        rows,
-        ...details,
-      };
-      settleUp.mutate({ ...body, clientKey: keyFor(body) }, callbacks);
-      return;
-    }
-
-    const payerId = direction === 'i_paid' ? me.id : counterparty.id;
-    const recipientId = direction === 'i_paid' ? counterparty.id : me.id;
-    if (usesSettlements) {
-      // In-group settle goes through the settlements endpoint too: the
-      // watermark makes a concurrent, stale settle fail with 409 instead of
-      // landing on top of the other one and reversing the debt.
-      const body = {
-        counterpartyId: counterparty.id,
-        currency,
-        date: todayISO(),
-        ...settlementWatermark(sync, counterparty.id),
-        rows: [{ groupId, payerId, recipientId, amountCents }],
-        ...details,
-      };
-      settleUp.mutate({ ...body, clientKey: keyFor(body) }, callbacks);
-      return;
-    }
-
-    // Legacy edge in a non-group currency: the settlements endpoint only
-    // accepts group-currency rows, so record a plain payment.
-    const input: ExpenseInput = {
+    // Only what the user can see and change decides whether this is a retry;
+    // the watermark and row breakdown are derived and move with every refetch.
+    const inputs = {
       groupId,
-      description: 'Payment',
-      amountCents,
+      counterpartyId: counterparty.id,
+      direction,
       currency,
-      date: todayISO(),
-      category: 'general',
-      notes: null,
-      isPayment: true,
-      shares: [
-        { userId: payerId, paidCents: amountCents, owedCents: 0 },
-        { userId: recipientId, paidCents: 0, owedCents: amountCents },
-      ],
+      amountCents,
+      ...details,
     };
-    createExpense.mutate({ ...input, clientKey: keyFor(input) }, callbacks);
+    const request = retry.request(inputs, (clientKey): SettleRequest => {
+      if (groupId === null) {
+        // Friend mode: record the apportioned rows atomically.
+        return {
+          kind: 'settle',
+          body: {
+            counterpartyId: counterparty.id,
+            currency,
+            date: todayISO(),
+            ...settlementWatermark(sync, counterparty.id),
+            rows: settleRows.map(({ groupId: g, payerId, recipientId, amountCents: cents }) => ({
+              groupId: g,
+              payerId,
+              recipientId,
+              amountCents: cents,
+            })),
+            ...details,
+            clientKey,
+          },
+        };
+      }
+      const payerId = direction === 'i_paid' ? me.id : counterparty.id;
+      const recipientId = direction === 'i_paid' ? counterparty.id : me.id;
+      if (usesSettlements) {
+        // In-group settle goes through the settlements endpoint too: the
+        // watermark makes a concurrent, stale settle fail with 409 instead of
+        // landing on top of the other one and reversing the debt.
+        return {
+          kind: 'settle',
+          body: {
+            counterpartyId: counterparty.id,
+            currency,
+            date: todayISO(),
+            ...settlementWatermark(sync, counterparty.id),
+            rows: [{ groupId, payerId, recipientId, amountCents }],
+            ...details,
+            clientKey,
+          },
+        };
+      }
+      // Legacy edge in a non-group currency: the settlements endpoint only
+      // accepts group-currency rows, so record a plain payment.
+      return {
+        kind: 'payment',
+        body: {
+          groupId,
+          description: 'Payment',
+          amountCents,
+          currency,
+          date: todayISO(),
+          category: 'general',
+          notes: null,
+          isPayment: true,
+          shares: [
+            { userId: payerId, paidCents: amountCents, owedCents: 0 },
+            { userId: recipientId, paidCents: 0, owedCents: amountCents },
+          ],
+          clientKey,
+        },
+      };
+    });
+    if (request.kind === 'settle') settleUp.mutate(request.body, callbacks);
+    else createExpense.mutate(request.body, callbacks);
   };
 
   return (
