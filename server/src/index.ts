@@ -18,9 +18,11 @@ import inviteRoutes from './routes/invites';
 import friendRoutes from './routes/friends';
 import expenseRoutes from './routes/expenses';
 import settlementRoutes from './routes/settlements';
+import receiptRoutes from './routes/receipts';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT ?? 8790);
+const RECEIPT_SCAN_PATH = '/api/receipts/scan';
 
 const app = new Hono<AppEnv>();
 
@@ -39,7 +41,10 @@ app.use('/api/*', csrfProtect);
 // Auth runs pre-session: key by IP so attacker-chosen cookies can't mint buckets.
 app.use('/api/auth/*', rateLimit(20, 'ip'));
 app.use('/api/*', rateLimit(300));
-app.use('/api/*', bodyLimit({ maxSize: 64 * 1024 }));
+const smallBody = bodyLimit({ maxSize: 64 * 1024 });
+// Receipt images get their own larger cap inside routes/receipts.ts; every
+// other path keeps the 64 KB limit.
+app.use('/api/*', (c, next) => (c.req.path === RECEIPT_SCAN_PATH ? next() : smallBody(c, next)));
 
 app.route('/api/auth', authRoutes);
 app.route('/api/me', meRoutes);
@@ -49,6 +54,7 @@ app.route('/api/invites', inviteRoutes);
 app.route('/api/friends', friendRoutes);
 app.route('/api/expenses', expenseRoutes);
 app.route('/api/settlements', settlementRoutes);
+app.route('/api/receipts', receiptRoutes);
 app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
 
 if (IS_PROD) {

@@ -104,6 +104,8 @@ export interface SyncData {
   activity: ActivityItem[];
   /** Optional: absent from older servers and older persisted payloads. */
   friendRequests?: FriendRequests;
+  /** Optional: absent from older servers and older persisted payloads. */
+  features?: { receiptScan?: boolean };
   syncedAt: string;
 }
 
@@ -134,4 +136,32 @@ export interface ExpenseInput {
   notes: string | null;
   isPayment: boolean;
   shares: ExpenseShare[];
+}
+
+export interface ReceiptLineItem {
+  name: string;
+  quantity: number | null;
+  amountCents: number;
+}
+
+/** POST /api/receipts/scan — amounts are minor units of `currency`. */
+export interface ReceiptDraft {
+  merchant: string | null;
+  date: string | null;
+  currency: string | null;
+  totalCents: number | null;
+  subtotalCents: number | null;
+  taxCents: number | null;
+  tipCents: number | null;
+  discountCents: number | null;
+  lineItems: ReceiptLineItem[];
+  category: Category;
+  confidence: 'high' | 'medium' | 'low';
+  notes: string | null;
+}
+
+export interface ReceiptScanResult {
+  draft: ReceiptDraft;
+  warnings: string[];
+  model: string;
 }

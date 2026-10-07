@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2 } from 'lucide-react';
+import { Camera, Plus, Trash2, TriangleAlert, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { CategoryIcon } from '@/components/common/CategoryIcon';
 import { useOnline } from '@/components/layout/OfflineBanner';
@@ -22,12 +22,14 @@ import { PickerSelect } from '@/components/ui/picker-select';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { currencyPickerOptions } from '@/components/common/currency-options';
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { CATEGORIES, CATEGORY_META } from '@/lib/categories';
-import { errorMessage, isConflict } from '@/lib/api';
+import { errorMessage, isConflict, scanErrorMessage, scanReceipt } from '@/lib/api';
 import { createClientKeyTracker } from '@/lib/client-key';
+import { downscaleImage, receiptPrefill } from '@/lib/receipt';
 import { formatMoney, isCanonicalAmount, parseAmountToCents } from '@/lib/money';
 import {
   SYNC_KEY,
@@ -75,6 +77,13 @@ export default function ExpenseForm({
       </SheetContent>
     </Sheet>
   );
+}
+
+interface ScanReview {
+  warnings: string[];
+  confidence: 'high' | 'medium' | 'low';
+  /** The model's own remark about something unclear, if any. */
+  remark: string | null;
 }
 
 function userById(sync: SyncData, id: number): User {
@@ -167,6 +176,66 @@ function FormFields({
   );
   const [attempted, setAttempted] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  // Receipt scanning (new expenses only). The scan only prefills fields — the
+  // user still picks payer/split and has to press Save.
+  const canScan = !isEdit && sync.features?.receiptScan === true;
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const scanAbort = useRef<AbortController | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanReview, setScanReview] = useState<ScanReview | null>(null);
+  useEffect(() => () => scanAbort.current?.abort(), []);
+
+  const handleReceiptFile = async (file: File | undefined) => {
+    if (!file) return;
+    scanAbort.current?.abort();
+    const ctrl = new AbortController();
+    scanAbort.current = ctrl;
+    setScanning(true);
+    setScanReview(null);
+    try {
+      let image: string;
+      try {
+        image = await downscaleImage(file);
+      } catch {
+        toast.error("Couldn't open that photo — try another one.");
+        return;
+      }
+      if (ctrl.signal.aborted) return;
+      const { draft, warnings } = await scanReceipt(image, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      const p = receiptPrefill(draft, currency, group === null);
+      const formCurrency = p.currency ?? currency;
+      if (p.description) setDescription(p.description);
+      if (p.currency) setCurrency(p.currency);
+      if (p.amountCents !== null) setAmountRaw(centsToInput(p.amountCents, formCurrency));
+      if (p.date) setDate(p.date);
+      setCategory(p.category);
+      if (p.notes) {
+        setNotes(p.notes);
+        setShowNotes(true);
+      }
+      setScanReview({
+        warnings: [...(p.currencyNotice ? [p.currencyNotice] : []), ...warnings],
+        confidence: draft.confidence,
+        remark: draft.notes,
+      });
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      toast.error(scanErrorMessage(err));
+    } finally {
+      if (scanAbort.current === ctrl) {
+        scanAbort.current = null;
+        setScanning(false);
+      }
+    }
+  };
+
+  const cancelScan = () => {
+    scanAbort.current?.abort();
+    scanAbort.current = null;
+    setScanning(false);
+  };
 
   const participants: User[] = useMemo(() => {
     if (group) {
@@ -308,6 +377,46 @@ function FormFields({
     <>
       <div className="min-h-0 flex-1 overflow-y-auto px-4">
         <FieldGroup className="pb-2">
+          {canScan ? (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                tabIndex={-1}
+                aria-hidden="true"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  // Reset so picking the same photo again still fires onChange.
+                  e.target.value = '';
+                  void handleReceiptFile(file);
+                }}
+              />
+              {scanning ? (
+                <ScanningCard onCancel={cancelScan} />
+              ) : scanReview ? (
+                <ScanReviewBanner
+                  review={scanReview}
+                  onRescan={() => fileInputRef.current?.click()}
+                  rescanDisabled={!online}
+                  onDismiss={() => setScanReview(null)}
+                />
+              ) : online ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 w-full rounded-full"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Camera data-icon="inline-start" />
+                  Scan receipt
+                </Button>
+              ) : null}
+            </>
+          ) : null}
+
           <Field data-invalid={attempted && descriptionError !== null}>
             <FieldLabel htmlFor="expense-description">Description</FieldLabel>
             <Input
@@ -522,5 +631,97 @@ function FormFields({
         ) : null}
       </SheetFooter>
     </>
+  );
+}
+
+function ScanningCard({ onCancel }: { onCancel: () => void }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex flex-col gap-3 rounded-[20px] border border-border bg-card p-4"
+    >
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Spinner />
+        Reading receipt…
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="ml-auto rounded-full"
+          onClick={onCancel}
+        >
+          Cancel
+        </Button>
+      </div>
+      <div className="flex flex-col gap-2" aria-hidden="true">
+        <Skeleton className="h-3 w-2/3 rounded-full" />
+        <Skeleton className="h-3 w-1/2 rounded-full" />
+        <Skeleton className="h-3 w-3/4 rounded-full" />
+      </div>
+    </div>
+  );
+}
+
+function ScanReviewBanner({
+  review,
+  onRescan,
+  rescanDisabled,
+  onDismiss,
+}: {
+  review: ScanReview;
+  onRescan: () => void;
+  rescanDisabled: boolean;
+  onDismiss: () => void;
+}) {
+  const low = review.confidence === 'low';
+  return (
+    <div
+      role="status"
+      className="flex flex-col gap-2 rounded-[20px] border border-signal/40 bg-signal/10 p-4 text-sm"
+    >
+      <div className="flex items-start gap-2">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-signal" aria-hidden="true" />
+        <p className="flex-1 font-medium">Check the amounts before saving</p>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="-mt-1 -mr-1 rounded-full"
+          aria-label="Dismiss"
+          onClick={onDismiss}
+        >
+          <X />
+        </Button>
+      </div>
+      {low ? (
+        <p className="font-medium text-owing">
+          Low confidence — the photo was hard to read. Double-check every field.
+        </p>
+      ) : review.confidence === 'medium' ? (
+        <p className="text-muted-foreground">Some values were hard to read.</p>
+      ) : null}
+      {review.warnings.length > 0 || review.remark ? (
+        <ul className="flex list-disc flex-col gap-1 pl-5 text-muted-foreground">
+          {review.warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+          {review.remark ? <li>{review.remark}</li> : null}
+        </ul>
+      ) : null}
+      <p className="text-muted-foreground">
+        Pick who paid and how to split, then save.
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="h-auto px-1.5 py-0 align-baseline"
+          disabled={rescanDisabled}
+          onClick={onRescan}
+        >
+          Scan again
+        </Button>
+      </p>
+    </div>
   );
 }

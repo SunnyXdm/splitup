@@ -33,6 +33,7 @@ splitting expenses with friends, built to be safe, precise, and pleasant to use.
 - **Offline-ready** — data is readable offline, installed or in the browser; edits require a connection by design, so there are no stale writes and no conflict surprises.
 - **Themes** — light, dark, and AMOLED, system-following, with a view-transition theme toggle.
 - **Everyday utilities** — activity feed, CSV export, and payment reminders.
+- **Receipt scanning** (optional) — snap a bill and get a prefilled draft expense; you still check the numbers, pick the split, and save.
 - **Privacy-first authentication** — Google sign-in via [shoo.dev](https://shoo.dev); no passwords stored, no tracking.
 
 ## Architecture
@@ -90,7 +91,7 @@ npm run build              # builds web/dist
 APP_ORIGIN=https://your.domain npm start   # serves web/dist and /api on :8790
 ```
 
-**Docker** — the included three-stage `Dockerfile` builds the web bundle and runs the
+**Docker** — the included multi-stage `Dockerfile` builds the web bundle and runs the
 server on port 8790:
 
 ```bash
@@ -116,13 +117,48 @@ docker run -d -p 8790:8790 \
 | `PORT` | `8790` | API/server port |
 | `NODE_ENV` | – | `production` enables Secure cookies, CSP, and static serving of `web/dist` |
 | `TRUST_PROXY` | – | `1`/`true` when behind a reverse proxy: rate limits key on the rightmost `X-Forwarded-For` entry (then `X-Real-IP`) instead of the proxy's socket address. Leave unset when directly exposed, or clients can spoof their IP |
+| `RECEIPT_SCAN` | auto | `0` disables receipt scanning, `1` forces it on. Auto = on when the `codex` binary resolves **and** `$CODEX_HOME/auth.json` exists (checked per request, so a fresh login takes effect without a restart) |
+| `CODEX_HOME` | `/codex` in Docker, else `~/.codex` | Codex CLI state dir holding `auth.json`. Mount a volume here |
+| `CODEX_BIN` | `codex` | Codex CLI executable (name on `PATH` or absolute path) |
+| `RECEIPT_MODEL` | `gpt-5.6-luna` | Model passed to `codex exec -m` |
+| `RECEIPT_EFFORT` | `low` | `model_reasoning_effort` for the scan |
+
+### Receipt scanning
+
+The "Scan receipt" button in **Add expense** sends a downscaled photo (≤1600 px JPEG)
+to `POST /api/receipts/scan`. The server runs the official
+[Codex CLI](https://github.com/openai/codex) (`codex exec`, read-only sandbox, strict
+JSON output schema, 90 s timeout, no shell) signed in with the **owner's ChatGPT
+plan**, then validates the result and returns a draft: merchant, date, currency,
+total, tax/tip/discount, line items, category, and warnings when the numbers don't
+add up. Nothing is saved until the user reviews the form and presses Save. A receipt
+in a different currency than the group is never converted — only the description and
+date are prefilled.
+
+The Docker image ships the Codex CLI (pinned, linux binary only, ~280 MB). Sign it in
+once — the login is stored in `$CODEX_HOME` (`/codex`), so mount a volume there:
+
+```bash
+docker exec -it splitup codex login --device-auth   # follow the device-code prompt
+# …or copy an existing auth.json from a machine where you ran `codex login`:
+docker cp ~/.codex/auth.json splitup:/codex/auth.json
+```
+
+Prefer the device login: a copied `auth.json` shares one refresh token between two
+machines, and when one side refreshes it the other may be signed out.
+
+Each scan uses the owner's ChatGPT plan quota (roughly 0.1 credit per scan with
+Luna; about 10–15 s each). Limits: 2 concurrent scans server-wide, 20 per user per hour and 60 per
+day; images up to 3 MB (JPEG, PNG, or WebP). Images are written to a private temp dir
+for the duration of the scan, deleted afterwards, never logged, and the Codex session
+is ephemeral. With no `auth.json`, the feature is simply hidden.
 
 ## Security
 
 - The shoo id_token is verified server-side against shoo's JWKS (ES256, issuer and audience pinned); the JWT is never stored and never reused.
 - Sessions are random 32-byte httpOnly cookies, SHA-256 hashed at rest, with a 30-day sliding expiry.
 - CSRF protection requires a custom `X-CSRF` header on every mutation, plus an `Origin` allowlist check.
-- Per-session rate limiting (300/min general, 20/min on auth), a 64 KB body cap, and strict CSP and security headers on HTML.
+- Per-session rate limiting (300/min general, 20/min on auth), a 64 KB body cap (4 MB on the receipt-scan route only), and strict CSP and security headers on HTML.
 - Every input is Zod-validated, all SQL uses prepared statements, and money is integer minor units end to end.
 - Non-members receive `404` (never `403`), so resource existence never leaks.
 
@@ -130,7 +166,7 @@ docker run -d -p 8790:8790 \
 
 ```bash
 npm run typecheck          # web and server
-npm test                   # money, balance, and CSV logic (Vitest)
+npm test                   # server (node:test) and web (Vitest) unit tests
 ```
 
 ## Design

@@ -7,7 +7,7 @@
     "build": "npm run build --prefix web",
     "start": "NODE_ENV=production npm run start --prefix server",
     "typecheck": "npm run typecheck --prefix web && npm run typecheck --prefix server",
-    "test": "npm test --prefix web"
+    "test": "npm test --prefix server && npm test --prefix web"
   },
   "devDependencies": {
     "concurrently": "^10.0.3",

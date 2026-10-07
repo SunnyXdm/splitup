@@ -13,7 +13,7 @@ export const CATEGORIES = [
   'health',
 ] as const;
 
-const MAX_CENTS = 100_000_000;
+export const MAX_CENTS = 100_000_000;
 const currency = z.string().regex(/^[A-Z]{3}$/);
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

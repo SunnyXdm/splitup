@@ -96,6 +96,8 @@ export interface SyncData {
   expenses: Expense[];
   activity: ActivityItem[];
   friendRequests: FriendRequests;
+  /** Server capabilities the client may surface. */
+  features: { receiptScan: boolean };
   syncedAt: string;
 }
 
