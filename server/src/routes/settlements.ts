@@ -4,6 +4,7 @@ import { requireAuth, type AppEnv } from '../auth';
 import { db, nowIso } from '../db';
 import { settlementsBody } from '../validate';
 import { readJson, type Expense } from '../lib/wire';
+import { notifySettlement } from '../lib/notify-events';
 import {
   areFriends,
   expenseWire,
@@ -174,6 +175,7 @@ app.post('/', async (c) => {
     return created;
   })();
 
+  notifySettlement(me, body.counterpartyId, body.rows, body.currency);
   return c.json({ expenses });
 });
 

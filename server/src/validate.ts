@@ -162,3 +162,51 @@ export const settlementsBody = z
   });
 
 export type SettlementsBody = z.infer<typeof settlementsBody>;
+
+const base64url = (max: number) =>
+  z
+    .string()
+    .min(16)
+    .max(max)
+    .regex(/^[A-Za-z0-9_-]+={0,2}$/, 'must be base64url');
+
+/**
+ * A push endpoint is a URL the SERVER will POST to, so beyond "https" refuse
+ * anything that names a local/internal host: IP literals, localhost and
+ * single-label names. Real push services are public DNS names.
+ */
+export const pushEndpoint = z
+  .string()
+  .max(1000)
+  .refine((raw) => {
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      return false;
+    }
+    const host = u.hostname.toLowerCase();
+    return (
+      u.protocol === 'https:' &&
+      u.username === '' &&
+      u.password === '' &&
+      host.includes('.') &&
+      !host.startsWith('[') &&
+      !/^\d+(\.\d+){3}$/.test(host) &&
+      !/(^|\.)(localhost|local|internal|localdomain)$/.test(host)
+    );
+  }, 'endpoint must be a public https URL');
+
+/** Shape of PushSubscription.toJSON(). */
+export const pushSubscriptionBody = z.strictObject({
+  endpoint: pushEndpoint,
+  expirationTime: z.number().nullable().optional(),
+  keys: z.strictObject({
+    p256dh: base64url(200),
+    auth: base64url(100),
+  }),
+});
+
+export const pushUnsubscribeBody = z.strictObject({
+  endpoint: z.string().min(1).max(1000),
+});

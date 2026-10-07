@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { useAuthActions } from '@/components/auth/auth-context';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { useTheme, type Theme } from '@/components/theme-provider';
+import { NotificationsSetting } from '@/components/common/NotificationsSetting';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -167,6 +168,15 @@ export default function Account() {
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Notifications</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <NotificationsSetting />
         </CardContent>
       </Card>
 

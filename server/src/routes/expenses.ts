@@ -4,6 +4,7 @@ import { requireAuth, type AppEnv } from '../auth';
 import { db, nowIso } from '../db';
 import { expenseCreateBody, expensePatchBody, idParam } from '../validate';
 import { readJson } from '../lib/wire';
+import { notifyExpense } from '../lib/notify-events';
 import {
   assertDepartedUnchanged,
   checkExpenseInput,
@@ -69,6 +70,7 @@ app.post('/', async (c) => {
     recordActivity(me.id, body.isPayment ? 'payment_added' : 'expense_added', body.groupId, id, summary);
     return expenseWire(id);
   })();
+  notifyExpense('created', me, expense);
   return c.json(expense);
 });
 
@@ -142,6 +144,12 @@ app.patch('/:id', async (c) => {
     recordActivity(me.id, 'expense_updated', body.groupId, id, summary);
     return expenseWire(id);
   })();
+  notifyExpense(
+    'edited',
+    me,
+    expense,
+    oldShares.map((s) => s.user_id),
+  );
   return c.json(expense);
 });
 
@@ -177,6 +185,14 @@ app.delete('/:id', (c) => {
       ),
     );
   })();
+  notifyExpense('deleted', me, {
+    id,
+    groupId: row.group_id,
+    description: row.description,
+    currency: row.currency,
+    isPayment: row.is_payment === 1,
+    shares: shares.map(shareLike),
+  });
   return c.body(null, 204);
 });
 

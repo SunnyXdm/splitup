@@ -3,6 +3,8 @@ import { Route, Routes, useLocation, useNavigate } from 'react-router';
 import AuthGate from '@/components/auth/AuthGate';
 import AppShell from '@/components/layout/AppShell';
 import { clearPendingInvite, readPendingInvite, pendingInvitePath } from '@/lib/pending-invite';
+import { useNotificationNavigation, usePushReconcile } from '@/lib/push-hooks';
+import { useSyncData } from '@/lib/queries';
 import Account from './screens/Account';
 import Activity from './screens/Activity';
 import FriendDetail from './screens/FriendDetail';
@@ -35,10 +37,18 @@ function PendingInviteRedirect() {
   return null;
 }
 
+/** Renders inside AuthGate: keeps this device's push subscription on the signed-in account. */
+function PushReconcile() {
+  usePushReconcile(useSyncData().data?.me.id);
+  return null;
+}
+
 export default function App() {
+  useNotificationNavigation();
   return (
     <AuthGate>
       <PendingInviteRedirect />
+      <PushReconcile />
       <AppShell>
         <Routes>
           <Route path="/" element={<Home />} />

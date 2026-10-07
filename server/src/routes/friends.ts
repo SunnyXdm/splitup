@@ -7,6 +7,7 @@ import { friendBody, idParam, inviteTokenParam } from '../validate';
 import { rateLimit } from '../security';
 import { readJson, toUser } from '../lib/wire';
 import { areFriends, recordActivity } from '../lib/expense';
+import { notifyFriendAccepted, notifyFriendRequest } from '../lib/notify-events';
 
 interface FriendInviteRow {
   token: string;
@@ -32,10 +33,10 @@ function friendInviteOr404(rawToken: string): FriendInviteRow {
 /**
  * Create the friendship in both directions and drop any pending requests
  * between the two; each side gets its own (actor-private) activity row, only
- * when the friendship is new.
+ * when the friendship is new. Returns whether it is new.
  */
-function befriend(me: UserRow, friend: UserRow): void {
-  db.transaction(() => {
+function befriend(me: UserRow, friend: UserRow): boolean {
+  return db.transaction(() => {
     const now = nowIso();
     const insert = db.prepare(
       'INSERT OR IGNORE INTO friendships (user_id, friend_id, created_at) VALUES (?, ?, ?)',
@@ -47,6 +48,7 @@ function befriend(me: UserRow, friend: UserRow): void {
       recordActivity(me.id, 'friend_added', null, null, `You became friends with ${friend.name}`);
       recordActivity(friend.id, 'friend_added', null, null, `You became friends with ${me.name}`);
     }
+    return added;
   })();
 }
 
@@ -106,7 +108,7 @@ app.post('/invites/:token/accept', (c) => {
     .prepare<[number], UserRow>('SELECT * FROM users WHERE id = ?')
     .get(invite.user_id)!;
   // An invite link is the inviter's consent: befriend directly.
-  befriend(me, inviter);
+  if (befriend(me, inviter)) notifyFriendAccepted(me, inviter.id, 'invite');
   return c.json({ user: toUser(inviter) });
 });
 
@@ -129,7 +131,7 @@ app.post('/', rateLimit(30, 'session', 60 * 60 * 1000), async (c) => {
   }
   // They already asked me: my request is the acceptance.
   if (friend && requestExists(friend.id, me)) {
-    befriend(me, friend);
+    if (befriend(me, friend)) notifyFriendAccepted(me, friend.id, 'request');
     return c.json({ status: 'friends', user: toUser(friend) });
   }
   // Everything else is stored by email whether or not an account exists, so
@@ -149,6 +151,8 @@ app.post('/', rateLimit(30, 'session', 60 * 60 * 1000), async (c) => {
     db.prepare(
       'INSERT INTO friend_requests (from_id, to_email, created_at) VALUES (?, ?, ?)',
     ).run(me.id, email, nowIso());
+    // Only a NEW request pings; re-sending an existing one stays silent.
+    notifyFriendRequest(me, email);
   }
   return c.json({ status: 'requested' });
 });
@@ -170,7 +174,7 @@ app.post('/requests/:id/accept', (c) => {
   const friend = db
     .prepare<[number], UserRow>('SELECT * FROM users WHERE id = ?')
     .get(req.from_id)!;
-  befriend(me, friend);
+  if (befriend(me, friend)) notifyFriendAccepted(me, friend.id, 'request');
   return c.json({ status: 'friends', user: toUser(friend) });
 });
 

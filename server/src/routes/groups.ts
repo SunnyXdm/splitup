@@ -6,6 +6,7 @@ import { db, nowIso, type GroupRow, type UserRow } from '../db';
 import { groupCreateBody, groupPatchBody, idParam, memberBody } from '../validate';
 import { readJson, toGroup } from '../lib/wire';
 import { areFriends, groupMemberIds, isMember, memberGroupOr404, recordActivity } from '../lib/expense';
+import { notifyAddedToGroup } from '../lib/notify-events';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -153,7 +154,7 @@ app.post('/:id/members', async (c) => {
   if (!areFriends(me.id, userId)) {
     throw new HTTPException(404, { message: 'not found' });
   }
-  db.transaction(() => {
+  const added = db.transaction(() => {
     const now = nowIso();
     const added = db
       .prepare('INSERT OR IGNORE INTO group_members (group_id, user_id, joined_at) VALUES (?, ?, ?)')
@@ -169,7 +170,7 @@ app.post('/:id/members', async (c) => {
         addFriend.run(userId, memberId, now);
         addFriend.run(memberId, userId, now);
       }
-      const added = db
+      const addedUser = db
         .prepare<[number], { name: string }>('SELECT name FROM users WHERE id = ?')
         .get(userId)!;
       recordActivity(
@@ -177,10 +178,12 @@ app.post('/:id/members', async (c) => {
         'member_joined',
         id,
         null,
-        `${me.name} added ${added.name} to ${group.name}`,
+        `${me.name} added ${addedUser.name} to ${group.name}`,
       );
     }
+    return added;
   })();
+  if (added) notifyAddedToGroup(me, userId, group);
   return c.json(toGroup(group, groupMemberIds(id)));
 });
 

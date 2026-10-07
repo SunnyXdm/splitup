@@ -116,6 +116,8 @@ docker run -d -p 8790:8790 \
 | `PORT` | `8790` | API/server port |
 | `NODE_ENV` | – | `production` enables Secure cookies, CSP, and static serving of `web/dist` |
 | `TRUST_PROXY` | – | `1`/`true` when behind a reverse proxy: rate limits key on the rightmost `X-Forwarded-For` entry (then `X-Real-IP`) instead of the proxy's socket address. Leave unset when directly exposed, or clients can spoof their IP |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | generated | Web Push keys (set both, e.g. from `npx web-push generate-vapid-keys`). When unset, a pair is generated on first boot and stored in the `settings` table, so it survives restarts — changing keys orphans existing device subscriptions |
+| `VAPID_SUBJECT` | `APP_ORIGIN` (if https) | `mailto:` or `https:` contact sent to push services; falls back to a placeholder `mailto:` for localhost |
 
 ## Security
 
