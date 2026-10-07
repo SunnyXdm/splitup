@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ExpenseDetailSheets } from '@/components/expense/ExpenseDetailSheet';
+import { useRepeatExpense } from '@/components/expense/RepeatExpense';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { acrossLabel, activityEvents, type ActivityEvent } from '@/lib/history-rows';
@@ -83,6 +84,7 @@ function TimeLine({ iso }: { iso: string }) {
 
 export default function Activity() {
   const { data: sync } = useSyncData();
+  const { onRepeat, repeatForm } = useRepeatExpense(sync);
   const detail = useExpenseDetail(sync);
   const [editing, setEditing] = useState<Expense | undefined>();
   const [expenseOpen, setExpenseOpen] = useState(false);
@@ -160,13 +162,14 @@ export default function Activity() {
         expense={editing}
         friendId={directFriendId}
       />
-      <ExpenseDetailSheets
+      <ExpenseDetailSheets onRepeat={onRepeat}
         detail={detail}
         onEdit={(e) => {
           setEditing(e);
           setExpenseOpen(true);
         }}
       />
+      {repeatForm}
     </div>
   );
 }

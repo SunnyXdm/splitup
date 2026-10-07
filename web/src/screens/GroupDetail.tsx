@@ -54,6 +54,7 @@ import { GuestPill, UserAvatar } from '@/components/common/UserAvatar';
 import ExplainBalanceSheet, { type ExplainTarget } from '@/components/common/ExplainBalanceSheet';
 import { DraftsChip } from '@/components/expense/DraftsSheet';
 import { ExpenseDetailSheets } from '@/components/expense/ExpenseDetailSheet';
+import { useRepeatExpense } from '@/components/expense/RepeatExpense';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import RecentlyDeletedSheet from '@/components/expense/RecentlyDeletedSheet';
 import SettleUpSheet, { type SettleDirection } from '@/components/expense/SettleUpSheet';
@@ -95,6 +96,7 @@ export default function GroupDetail() {
   const navigate = useOverlayNavigate();
   const online = useOnline();
   const { data: sync, isFetching: syncFetching } = useSyncData();
+  const { onRepeat, repeatForm } = useRepeatExpense(sync);
   useDocumentTitle(sync?.groups.find((g) => g.id === groupId)?.name);
 
   const updateGroup = useUpdateGroup();
@@ -688,7 +690,8 @@ export default function GroupDetail() {
         groupId={group.id}
         expense={editingExpense}
       />
-      <ExpenseDetailSheets detail={detail} onEdit={editExpense} />
+      <ExpenseDetailSheets onRepeat={onRepeat} detail={detail} onEdit={editExpense} />
+      {repeatForm}
       <ExplainBalanceSheet
         open={explainOpen}
         onOpenChange={setExplainOpen}

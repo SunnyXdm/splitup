@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ExpenseDetailSheets } from '@/components/expense/ExpenseDetailSheet';
+import { useRepeatExpense } from '@/components/expense/RepeatExpense';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import { PageHeader } from '@/components/layout/PageHeader';
 import FilteredHistory from '@/components/search/FilteredHistory';
@@ -20,6 +21,7 @@ import { useExpenseDetail } from '@/lib/use-expense-detail';
 /** Global search across every expense and payment on this device (works offline). */
 export default function Search() {
   const { data: sync } = useSyncData();
+  const { onRepeat, repeatForm } = useRepeatExpense(sync);
   const [params] = useSearchParams();
   const [editing, setEditing] = useState<Expense | undefined>();
   const [expenseOpen, setExpenseOpen] = useState(false);
@@ -88,13 +90,14 @@ export default function Search() {
         expense={editing}
         friendId={directFriendId}
       />
-      <ExpenseDetailSheets
+      <ExpenseDetailSheets onRepeat={onRepeat}
         detail={detail}
         onEdit={(e) => {
           setEditing(e);
           setExpenseOpen(true);
         }}
       />
+      {repeatForm}
     </div>
   );
 }

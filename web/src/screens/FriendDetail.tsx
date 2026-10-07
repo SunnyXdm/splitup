@@ -31,6 +31,7 @@ import { MoneyText } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { DraftsChip } from '@/components/expense/DraftsSheet';
 import { ExpenseDetailSheets } from '@/components/expense/ExpenseDetailSheet';
+import { useRepeatExpense } from '@/components/expense/RepeatExpense';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import RecentlyDeletedSheet from '@/components/expense/RecentlyDeletedSheet';
 import SettleUpSheet from '@/components/expense/SettleUpSheet';
@@ -51,6 +52,7 @@ export default function FriendDetail() {
   const navigate = useNavigate();
   const online = useOnline();
   const { data: sync, isFetching: syncFetching } = useSyncData();
+  const { onRepeat, repeatForm } = useRepeatExpense(sync);
   useDocumentTitle(sync?.users.find((u) => u.id === friendId)?.name);
   const detail = useExpenseDetail(sync);
 
@@ -279,7 +281,8 @@ export default function FriendDetail() {
         expense={editingExpense}
         friendId={friend.id}
       />
-      <ExpenseDetailSheets detail={detail} onEdit={editExpense} />
+      <ExpenseDetailSheets onRepeat={onRepeat} detail={detail} onEdit={editExpense} />
+      {repeatForm}
       <ExplainBalanceSheet
         open={explainOpen}
         onOpenChange={setExplainOpen}

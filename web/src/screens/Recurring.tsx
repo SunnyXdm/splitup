@@ -150,10 +150,12 @@ export default function Recurring() {
         groupId={editing?.groupId ?? null}
         rule={editing}
       />
-      {/* TODO(expense-form owner): open this with Repeat preset to "monthly"
-          (e.g. a `defaultRepeat` prop on ExpenseForm). Until then "New" opens
-          the regular add-expense form and the person picks Repeat themselves. */}
-      <ExpenseForm open={newOpen} onOpenChange={setNewOpen} groupId={group?.id ?? null} />
+      <ExpenseForm
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        groupId={group?.id ?? null}
+        defaultRepeat="monthly"
+      />
       <DeleteRuleDialog rule={deleting} onClose={() => setDeleting(null)} />
     </div>
   );
