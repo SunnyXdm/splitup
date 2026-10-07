@@ -303,7 +303,7 @@ function SheetBody({ groupId }: { groupId: number }) {
                 type="button"
                 disabled={!online || pendingId !== null}
                 onClick={() => add(u.id, u.name)}
-                className="flex min-h-12 w-full items-center gap-3 rounded-2xl px-3 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
+                className="flex min-h-12 w-full items-center gap-3 rounded-2xl px-3 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-focus-ring disabled:opacity-50"
               >
                 <UserAvatar user={u} size="sm" />
                 <span className="min-w-0 flex-1 truncate font-medium">{u.name}</span>

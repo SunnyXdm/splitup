@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { ApiError } from '@/lib/api';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { useOnline } from '@/components/layout/OfflineBanner';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -16,7 +17,17 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { useAcceptFriendInvite, useFriendInvitePreview } from '@/lib/queries';
 
+/** Chrome-less landing page (AppShell hides the tab bar here); Back exits to Home. */
 export default function FriendInvite() {
+  return (
+    <div className="flex flex-col gap-6 pb-6">
+      <PageHeader title="Friend invite" />
+      <FriendInviteBody />
+    </div>
+  );
+}
+
+function FriendInviteBody() {
   const { token = '' } = useParams();
   const navigate = useNavigate();
   const online = useOnline();
@@ -35,8 +46,8 @@ export default function FriendInvite() {
 
   if (preview.isPending) {
     return (
-      <div className="flex justify-center px-4 py-12">
-        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl bg-card p-8">
+      <div className="flex justify-center">
+        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-card bg-card p-8">
           <Skeleton className="size-24 rounded-full" />
           <Skeleton className="h-7 w-40" />
           <Skeleton className="h-4 w-52" />
@@ -51,7 +62,7 @@ export default function FriendInvite() {
   const notFound = preview.error instanceof ApiError && preview.error.status === 404;
   if (notFound) {
     return (
-      <div className="flex justify-center px-4 py-12">
+      <div className="flex justify-center">
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -70,7 +81,7 @@ export default function FriendInvite() {
   const invite = preview.data;
   if (!invite) {
     return (
-      <div className="flex justify-center px-4 py-12">
+      <div className="flex justify-center">
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -101,11 +112,10 @@ export default function FriendInvite() {
       }
     };
     return (
-      <div className="flex justify-center px-4 py-12">
-        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl bg-card p-8 text-center shadow-[0_24px_48px_rgba(0,0,0,0.08)]">
-          <span className="eyebrow">Friend invite</span>
+      <div className="flex justify-center">
+        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-card bg-card p-8 text-center">
           <UserAvatar user={invite.inviter} size="lg" className="size-24 text-2xl" />
-          <h1 className="text-2xl">This is your invite link</h1>
+          <h2 className="text-2xl">This is your invite link</h2>
           <p className="text-sm text-muted-foreground">
             Send it to someone else — when they open it and sign in, you become friends.
           </p>
@@ -120,11 +130,10 @@ export default function FriendInvite() {
 
   if (invite.alreadyFriends) {
     return (
-      <div className="flex justify-center px-4 py-12">
-        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl bg-card p-8 text-center shadow-[0_24px_48px_rgba(0,0,0,0.08)]">
-          <span className="eyebrow">Friend invite</span>
+      <div className="flex justify-center">
+        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-card bg-card p-8 text-center">
           <UserAvatar user={invite.inviter} size="lg" className="size-24 text-2xl" />
-          <h1 className="text-2xl">{invite.inviter.name}</h1>
+          <h2 className="text-2xl">{invite.inviter.name}</h2>
           <p className="text-sm text-muted-foreground">You&rsquo;re already friends.</p>
           <Button
             className="h-12 w-full rounded-full"
@@ -138,11 +147,10 @@ export default function FriendInvite() {
   }
 
   return (
-    <div className="flex justify-center px-4 py-12">
-      <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl bg-card p-8 text-center shadow-[0_24px_48px_rgba(0,0,0,0.08)]">
-        <span className="eyebrow">Friend invite</span>
+    <div className="flex justify-center">
+      <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-card bg-card p-8 text-center">
         <UserAvatar user={invite.inviter} size="lg" className="size-24 text-2xl" />
-        <h1 className="text-2xl">{invite.inviter.name}</h1>
+        <h2 className="text-2xl">{invite.inviter.name}</h2>
         <p className="text-sm text-muted-foreground">
           wants to split expenses with you on Splitup.
         </p>

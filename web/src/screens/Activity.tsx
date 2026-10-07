@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
+import { PageHeader } from '@/components/layout/PageHeader';
+import { activitySummary } from '@/lib/names';
 import { useSyncData } from '@/lib/queries';
 import type { ActivityItem, ActivityType } from '@/lib/types';
 
@@ -62,7 +64,7 @@ export default function Activity() {
 
   return (
     <div className="flex flex-col gap-4 pb-6">
-      <span className="eyebrow">Activity</span>
+      <PageHeader title="Activity" />
       {days.length === 0 ? (
         <Empty className="rounded-[28px] bg-card py-16">
           <EmptyHeader>
@@ -89,7 +91,7 @@ export default function Activity() {
                         <Icon className="size-4 text-foreground/70" aria-hidden="true" />
                       </span>
                       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                        <p className="text-sm">{item.summary}</p>
+                        <p className="text-sm">{activitySummary(item.summary, sync.me)}</p>
                         <p className="text-xs text-muted-foreground">
                           {(() => {
                             const d = parseDateSafe(item.createdAt);
@@ -112,7 +114,7 @@ export default function Activity() {
 function ActivitySkeleton() {
   return (
     <div className="flex flex-col gap-4 pb-6">
-      <Skeleton className="h-4 w-24 rounded-full" />
+      <Skeleton className="h-11 w-40 rounded-full" />
       <Skeleton className="h-48 rounded-[28px]" />
       <Skeleton className="h-48 rounded-[28px]" />
     </div>

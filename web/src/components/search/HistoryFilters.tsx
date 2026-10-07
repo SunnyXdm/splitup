@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 /** Pill-shaped filter chip: ink-filled when the filter is narrowing the list. */
 function chipClass(active: boolean) {
   return cn(
-    'h-9 w-auto max-w-[15rem] shrink-0 gap-1.5 border-border bg-card px-3.5 text-[13px] font-medium',
+    'hit-area h-9 w-auto max-w-[15rem] shrink-0 gap-1.5 border-border bg-card px-3.5 text-[13px] font-medium',
     active &&
       'border-primary bg-primary text-primary-foreground [&_svg]:text-primary-foreground/70',
   );
@@ -260,7 +260,7 @@ export function HistoryFilterBar({
             type="button"
             aria-label="Clear search text"
             onClick={() => onTextChange('')}
-            className="text-muted-foreground hover:bg-secondary focus-visible:ring-ring/50 absolute top-1/2 right-2 flex size-8 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2"
+            className="hit-area text-muted-foreground hover:bg-secondary focus-visible:ring-focus-ring absolute top-1/2 right-2 flex size-8 -translate-y-1/2 items-center justify-center rounded-full outline-none focus-visible:ring-2"
           >
             <X className="size-4" aria-hidden="true" />
           </button>
@@ -270,7 +270,7 @@ export function HistoryFilterBar({
       <div
         role="group"
         aria-label="Filters"
-        className="-mx-4 flex [scrollbar-width:none] gap-2 overflow-x-auto px-4 pb-1 [&::-webkit-scrollbar]:hidden"
+        className="relative -mx-4 -mt-1 flex [scrollbar-width:none] gap-2 overflow-x-auto px-4 py-1 [&::-webkit-scrollbar]:hidden"
       >
         <DateRangeChip value={filters} onChange={(next) => onChange(next)} />
         <PickerSelect

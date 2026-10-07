@@ -159,7 +159,7 @@ function DraftsBody({
                     type="button"
                     disabled={adding}
                     onClick={() => openDraft(d.id)}
-                    className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                    className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
                   >
                     <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-background">
                       <CategoryIcon

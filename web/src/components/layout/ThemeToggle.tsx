@@ -34,7 +34,7 @@ export default function ThemeToggle() {
       type="button"
       aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
       onClick={toggleTheme}
-      className="flex size-11 items-center justify-center rounded-full bg-card text-foreground shadow-[0_4px_24px_rgba(0,0,0,0.04)] outline-none pressable hover:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+      className="flex size-11 items-center justify-center rounded-full bg-card text-foreground shadow-[0_4px_24px_rgba(0,0,0,0.04)] outline-none pressable hover:text-muted-foreground focus-visible:ring-3 focus-visible:ring-focus-ring"
     >
       <Icon className="size-5" aria-hidden="true" />
     </button>

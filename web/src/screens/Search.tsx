@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 import ExpenseForm from '@/components/expense/ExpenseForm';
+import { PageHeader } from '@/components/layout/PageHeader';
 import FilteredHistory from '@/components/search/FilteredHistory';
 import { useSyncData } from '@/lib/queries';
 import type { Expense } from '@/lib/types';
@@ -32,7 +33,7 @@ export default function Search() {
   if (!sync) {
     return (
       <div className="flex flex-col gap-4 pb-6">
-        <Skeleton className="h-4 w-24 rounded-full" />
+        <Skeleton className="h-11 w-40 rounded-full" />
         <Skeleton className="h-12 rounded-full" />
         <Skeleton className="h-40 rounded-[28px]" />
       </div>
@@ -47,7 +48,7 @@ export default function Search() {
 
   return (
     <div className="flex flex-col gap-4 pb-6">
-      <h1 className="eyebrow">Search</h1>
+      <PageHeader title="Search" />
       <FilteredHistory
         sync={sync}
         expenses={sync.expenses}

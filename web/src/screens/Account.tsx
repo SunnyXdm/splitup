@@ -5,6 +5,7 @@ import { ChevronRight, LogOut, Monitor, Moon, MoonStar, Repeat, Sun } from 'luci
 import { toast } from 'sonner';
 import { useAuthActions } from '@/components/auth/auth-context';
 import { useOnline } from '@/components/layout/OfflineBanner';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { useTheme, type Theme } from '@/components/theme-provider';
 import { NotificationsSetting } from '@/components/common/NotificationsSetting';
 import { UserAvatar } from '@/components/common/UserAvatar';
@@ -79,12 +80,12 @@ export default function Account() {
 
   return (
     <div className="flex flex-col gap-6">
-      <span className="eyebrow">Account</span>
+      <PageHeader title="Account" />
 
       <div className="flex items-center gap-4 rounded-[28px] bg-card p-6">
         <UserAvatar user={me} size="lg" />
         <div className="flex min-w-0 flex-col gap-0.5">
-          <h1 className="truncate text-xl">{me.name}</h1>
+          <h2 className="truncate text-xl">{me.name}</h2>
           {me.email ? (
             <p className="truncate text-sm text-muted-foreground">{me.email}</p>
           ) : null}

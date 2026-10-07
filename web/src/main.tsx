@@ -83,7 +83,7 @@ createRoot(document.getElementById('root')!).render(
         <TransitionRouter>
           <App />
         </TransitionRouter>
-        <Toaster position="top-center" />
+        <Toaster />
       </PersistQueryClientProvider>
     </ThemeProvider>
   </StrictMode>,

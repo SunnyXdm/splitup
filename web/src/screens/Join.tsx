@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
 import { ApiError } from '@/lib/api';
 import { useOnline } from '@/components/layout/OfflineBanner';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -15,7 +16,17 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { useInvitePreview, useJoinInvite } from '@/lib/queries';
 
+/** Chrome-less landing page (AppShell hides the tab bar here); Back exits to Home. */
 export default function Join() {
+  return (
+    <div className="flex flex-col gap-6 pb-6">
+      <PageHeader title="Group invite" />
+      <JoinBody />
+    </div>
+  );
+}
+
+function JoinBody() {
   const { token = '' } = useParams();
   const navigate = useNavigate();
   const online = useOnline();
@@ -34,8 +45,8 @@ export default function Join() {
 
   if (preview.isPending) {
     return (
-      <div className="flex justify-center px-4 py-12">
-        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl bg-card p-8">
+      <div className="flex justify-center">
+        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-card bg-card p-8">
           <Skeleton className="size-24 rounded-full" />
           <Skeleton className="h-7 w-40" />
           <Skeleton className="h-4 w-52" />
@@ -50,7 +61,7 @@ export default function Join() {
   const notFound = preview.error instanceof ApiError && preview.error.status === 404;
   if (notFound) {
     return (
-      <div className="flex justify-center px-4 py-12">
+      <div className="flex justify-center">
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -69,7 +80,7 @@ export default function Join() {
   const invite = preview.data;
   if (!invite) {
     return (
-      <div className="flex justify-center px-4 py-12">
+      <div className="flex justify-center">
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -95,13 +106,12 @@ export default function Join() {
     (invite.memberNames.length > 5 ? ` & ${invite.memberNames.length - 5} more` : '');
 
   return (
-    <div className="flex justify-center px-4 py-12">
-      <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl bg-card p-8 text-center shadow-[0_24px_48px_rgba(0,0,0,0.08)]">
-        <span className="eyebrow">Group invite</span>
+    <div className="flex justify-center">
+      <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-card bg-card p-8 text-center">
         <div className="flex size-24 items-center justify-center rounded-full bg-background text-5xl">
           <span aria-hidden="true">{invite.emoji}</span>
         </div>
-        <h1 className="text-2xl">{invite.groupName}</h1>
+        <h2 className="text-2xl">{invite.groupName}</h2>
         <p className="text-sm text-muted-foreground">
           {invite.alreadyMember
             ? 'You are already a member of this group.'

@@ -258,7 +258,7 @@ function ExplainBody({ target }: { target: ExplainTarget }) {
                           : { kind: 'group', groupId: slice.scope },
                       )
                     }
-                    className="flex min-h-16 w-full items-center gap-3 border-b border-border/60 py-3 text-left outline-none last:border-b-0 focus-visible:ring-2 focus-visible:ring-ring/50"
+                    className="flex min-h-16 w-full items-center gap-3 border-b border-border/60 py-3 text-left outline-none last:border-b-0 focus-visible:ring-2 focus-visible:ring-focus-ring"
                   >
                     <ScopeBadge emoji={slice.scope === null ? null : (group?.emoji ?? '👥')} />
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -500,7 +500,7 @@ function GroupTrace({ sync, names, x }: { sync: SyncData; names: Names; x: Group
           type="button"
           aria-expanded={ledgerOpen}
           onClick={() => setLedgerOpen((o) => !o)}
-          className="flex items-center justify-between gap-3 rounded-full py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="flex items-center justify-between gap-3 rounded-full py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
         >
           <span className="eyebrow">
             {x.ledger.length === 1 ? '1 expense' : `${x.ledger.length} expenses`} in this group
@@ -601,7 +601,7 @@ function GroupTrace({ sync, names, x }: { sync: SyncData; names: Names; x: Group
                     className={cn(
                       'flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium tabular-nums',
                       s.highlighted
-                        ? 'bg-signal text-white'
+                        ? 'bg-signal text-signal-foreground'
                         : 'bg-background text-muted-foreground',
                     )}
                     aria-hidden="true"

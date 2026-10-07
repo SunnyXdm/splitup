@@ -27,14 +27,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { BackButton } from '@/components/layout/PageHeader';
+import { useDocumentTitle } from '@/lib/back-nav';
+import { FormSheet } from '@/components/common/FormSheet';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -98,6 +94,7 @@ export default function GroupDetail() {
   const navigate = useOverlayNavigate();
   const online = useOnline();
   const { data: sync, isFetching: syncFetching } = useSyncData();
+  useDocumentTitle(sync?.groups.find((g) => g.id === groupId)?.name);
 
   const updateGroup = useUpdateGroup();
   const leaveGroup = useLeaveGroup();
@@ -233,6 +230,7 @@ export default function GroupDetail() {
 
   return (
     <div className="flex flex-col gap-6 pb-6">
+      <BackButton className="-mb-2" />
       <header className="flex flex-wrap items-center gap-4">
         <span
           className="flex size-14 shrink-0 items-center justify-center rounded-full bg-card text-3xl"
@@ -333,7 +331,7 @@ export default function GroupDetail() {
         onValueChange={(v) => setTab(v as (typeof TABS)[number])}
         className="gap-4"
       >
-        <TabsList className="w-full rounded-full p-1 group-data-horizontal/tabs:h-11">
+        <TabsList className="w-full rounded-full p-1">
           <TabsTrigger value="expenses" className="rounded-full">
             Expenses
           </TabsTrigger>
@@ -447,7 +445,7 @@ export default function GroupDetail() {
                         otherId: null,
                       })
                     }
-                    className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                    className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
                   >
                     {rowContent}
                   </button>
@@ -488,7 +486,7 @@ export default function GroupDetail() {
                               otherId: involved ? other : t.fromUserId,
                             })
                           }
-                          className="-my-1 flex min-w-0 flex-1 items-center gap-3 rounded-full py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                          className="-my-1 flex min-w-0 flex-1 items-center gap-3 rounded-full py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
                         >
                           <span className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
                             <span className="truncate font-medium">{nameOf(t.fromUserId)}</span>
@@ -580,39 +578,23 @@ export default function GroupDetail() {
         </TabsContent>
       </Tabs>
 
-      <Dialog open={editValues !== null} onOpenChange={(o) => !o && setEditValues(null)}>
-        <DialogContent>
-          <form onSubmit={submitEdit} className="flex flex-col gap-4">
-            <DialogHeader>
-              <DialogTitle>Edit group</DialogTitle>
-            </DialogHeader>
-            {editValues && (
-              <GroupFormFields
-                values={editValues}
-                onChange={setEditValues}
-                currencyLocked={sync.expenses.some((e) => e.groupId === group.id)}
-              />
-            )}
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                className="rounded-full"
-                onClick={() => setEditValues(null)}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                className="rounded-full"
-                disabled={!editValues?.name.trim() || updateGroup.isPending || !online}
-              >
-                Save changes
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <FormSheet
+        open={editValues !== null}
+        onOpenChange={(o) => !o && setEditValues(null)}
+        title="Edit group"
+        onSubmit={submitEdit}
+        submitLabel="Save changes"
+        pending={updateGroup.isPending}
+        submitDisabled={!editValues?.name.trim() || updateGroup.isPending || !online}
+      >
+        {editValues && (
+          <GroupFormFields
+            values={editValues}
+            onChange={setEditValues}
+            currencyLocked={sync.expenses.some((e) => e.groupId === group.id)}
+          />
+        )}
+      </FormSheet>
 
       <AlertDialog open={leaveOpen} onOpenChange={setLeaveOpen}>
         <AlertDialogContent>

@@ -6,6 +6,7 @@ import { CategoryIcon } from '@/components/common/CategoryIcon';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import { todayISO } from '@/components/expense/money-input';
 import { useOnline } from '@/components/layout/OfflineBanner';
+import { PageHeader } from '@/components/layout/PageHeader';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -76,23 +77,25 @@ export default function Recurring() {
 
   return (
     <div className="flex flex-col gap-6 pb-6">
-      <header className="flex flex-col gap-1">
-        <span className="eyebrow">Recurring bills</span>
-        <h1 className="text-2xl font-medium tracking-tight sm:text-3xl">
-          {group ? `${group.emoji} ${group.name}` : 'Rent, bills & subscriptions'}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          When a bill is due it waits in “Due to add” on Home — nothing is added without you.
-        </p>
-        {group ? (
-          <Link
-            to="/recurring"
-            className="self-start text-sm text-muted-foreground underline underline-offset-4"
-          >
-            Show all recurring bills
-          </Link>
-        ) : null}
-      </header>
+      <PageHeader
+        eyebrow="Recurring bills"
+        documentTitle="Recurring bills"
+        title={group ? `${group.emoji} ${group.name}` : 'Rent, bills & subscriptions'}
+        titleClassName="sm:text-3xl"
+        description={
+          <>
+            When a bill is due it waits in “Due to add” on Home — nothing is added without you.
+            {group ? (
+              <>
+                {' '}
+                <Link to="/recurring" className="text-foreground underline underline-offset-4">
+                  Show all recurring bills
+                </Link>
+              </>
+            ) : null}
+          </>
+        }
+      />
 
       {rules.length === 0 ? (
         <Empty className="rounded-[28px] bg-card py-12">

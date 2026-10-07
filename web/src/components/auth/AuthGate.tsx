@@ -179,8 +179,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   return (
     <AuthActionsContext.Provider value={actions}>
+      {/* Inside the app, AppShell shows the offline strip under its header. */}
+      {content === children ? null : (
+        <OfflineBanner className="fixed inset-x-4 top-[max(1rem,env(safe-area-inset-top))] z-50 mx-auto max-w-md" />
+      )}
       {content}
-      <OfflineBanner />
     </AuthActionsContext.Provider>
   );
 }

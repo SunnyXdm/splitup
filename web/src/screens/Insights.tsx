@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { addMonths, endOfMonth, format, isValid, parse } from 'date-fns';
 import { ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import ExpenseForm from '@/components/expense/ExpenseForm';
@@ -68,38 +69,42 @@ export default function Insights() {
 
   return (
     <div className="flex flex-col gap-6 pb-6">
-      <header className="flex flex-col gap-3">
-        <span className="eyebrow">Insights</span>
-        <div className="flex items-center gap-2">
-          <h1 className="min-w-0 flex-1 truncate text-2xl font-medium tracking-tight sm:text-3xl">
-            {format(monthStart, 'MMMM yyyy')}
-          </h1>
-          <Button
-            variant="outline"
-            size="icon-lg"
-            className="size-10 rounded-full"
-            aria-label="Previous month"
-            disabled={month <= earliest}
-            onClick={() => go(-1)}
-          >
-            <ChevronLeft aria-hidden="true" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon-lg"
-            className="size-10 rounded-full"
-            aria-label="Next month"
-            disabled={month >= thisMonth}
-            onClick={() => go(1)}
-          >
-            <ChevronRight aria-hidden="true" />
-          </Button>
-        </div>
-        <p className="text-muted-foreground text-sm">
-          Your share of every expense you were part of, in groups and one-to-one. Settle-up payments
-          aren&rsquo;t spending, so they&rsquo;re counted separately.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Insights"
+        documentTitle="Insights"
+        title={format(monthStart, 'MMMM yyyy')}
+        titleClassName="truncate sm:text-3xl"
+        actions={
+          <>
+            <Button
+              variant="outline"
+              size="icon-lg"
+              className="size-10 rounded-full"
+              aria-label="Previous month"
+              disabled={month <= earliest}
+              onClick={() => go(-1)}
+            >
+              <ChevronLeft aria-hidden="true" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon-lg"
+              className="size-10 rounded-full"
+              aria-label="Next month"
+              disabled={month >= thisMonth}
+              onClick={() => go(1)}
+            >
+              <ChevronRight aria-hidden="true" />
+            </Button>
+          </>
+        }
+        description={
+          <>
+            Your share of every expense you were part of, in groups and one-to-one. Settle-up
+            payments aren&rsquo;t spending, so they&rsquo;re counted separately.
+          </>
+        }
+      />
 
       <SpendingSummary
         sync={sync}

@@ -2,15 +2,8 @@ import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { Check, ChevronRight, Clock, HeartHandshake, Link2, UserRoundPlus, X } from 'lucide-react';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import {
   Empty,
   EmptyContent,
@@ -24,6 +17,7 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
+import { FormSheet } from '@/components/common/FormSheet';
 import { AnimatedMoney } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { useOnline } from '@/components/layout/OfflineBanner';
@@ -54,19 +48,17 @@ export default function Friends() {
 
   return (
     <div className="flex flex-col gap-4 pb-6">
-      <div className="flex items-center justify-between">
-        <span className="eyebrow">Friends</span>
-        {friends.length > 0 && (
-          <Button
-            variant="outline"
-            className="h-10 rounded-full px-4"
-            onClick={() => setAddOpen(true)}
-          >
-            <UserRoundPlus data-icon="inline-start" aria-hidden="true" />
-            Add friend
-          </Button>
-        )}
-      </div>
+      <PageHeader
+        title="Friends"
+        actions={
+          friends.length > 0 ? (
+            <Button variant="outline" size="pill" onClick={() => setAddOpen(true)}>
+              <UserRoundPlus data-icon="inline-start" aria-hidden="true" />
+              Add friend
+            </Button>
+          ) : null
+        }
+      />
 
       <FriendRequestsSection requests={sync.friendRequests} />
 
@@ -118,7 +110,7 @@ export default function Friends() {
         </FriendList>
       )}
 
-      <AddFriendDialog open={addOpen} onOpenChange={setAddOpen} />
+      <AddFriendSheet open={addOpen} onOpenChange={setAddOpen} />
     </div>
   );
 }
@@ -147,7 +139,7 @@ function FriendRow({ index, to, children }: { index: number; to: string; childre
   );
 }
 
-function AddFriendDialog({
+function AddFriendSheet({
   open,
   onOpenChange,
 }: {
@@ -178,8 +170,7 @@ function AddFriendDialog({
     onOpenChange(next);
   };
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = () => {
     const value = email.trim();
     if (!value || addFriend.isPending) return;
     addFriend.mutate(value, {
@@ -205,71 +196,59 @@ function AddFriendDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent>
-        <form onSubmit={submit} className="flex flex-col gap-4">
-          <DialogHeader>
-            <DialogTitle>Add a friend</DialogTitle>
-            <DialogDescription>
-              We&rsquo;ll send them a friend request — they&rsquo;ll see it next time they open
-              Splitup.
-            </DialogDescription>
-          </DialogHeader>
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="friend-email">Email</FieldLabel>
-              <Input
-                id="friend-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="friend@example.com"
-                autoComplete="email"
-              />
-            </Field>
-          </FieldGroup>
-          <div className="flex items-center gap-3">
-            <Separator className="flex-1" />
-            <span className="text-xs text-muted-foreground">or</span>
-            <Separator className="flex-1" />
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="h-11 rounded-full"
-            disabled={!online || createInvite.isPending}
-            onClick={copyInviteLink}
-          >
-            {createInvite.isPending ? (
-              <Spinner data-icon="inline-start" />
-            ) : (
-              <Link2 data-icon="inline-start" aria-hidden="true" />
-            )}
-            Copy invite link
-          </Button>
-          <p className="text-center text-xs text-muted-foreground">
-            Anyone who opens your link and signs in becomes your friend. Links expire in 7 days.
-          </p>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              className="rounded-full"
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              className="rounded-full"
-              disabled={!email.trim() || addFriend.isPending || !online}
-            >
-              Send request
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <FormSheet
+      open={open}
+      onOpenChange={handleOpenChange}
+      title="Add a friend"
+      description={
+        <>
+          We&rsquo;ll send them a friend request — they&rsquo;ll see it next time they open
+          Splitup.
+        </>
+      }
+      onSubmit={submit}
+      submitLabel="Send request"
+      pending={addFriend.isPending}
+      submitDisabled={!email.trim() || addFriend.isPending || !online}
+    >
+      <div className="flex flex-col gap-4">
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="friend-email">Email</FieldLabel>
+            <Input
+              id="friend-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="friend@example.com"
+              autoComplete="email"
+            />
+          </Field>
+        </FieldGroup>
+        <div className="flex items-center gap-3">
+          <Separator className="flex-1" />
+          <span className="text-xs text-muted-foreground">or</span>
+          <Separator className="flex-1" />
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="pill"
+          disabled={!online || createInvite.isPending}
+          onClick={copyInviteLink}
+        >
+          {createInvite.isPending ? (
+            <Spinner data-icon="inline-start" />
+          ) : (
+            <Link2 data-icon="inline-start" aria-hidden="true" />
+          )}
+          Copy invite link
+        </Button>
+        <p className="text-center text-xs text-muted-foreground">
+          Anyone who opens your link and signs in becomes your friend. Links expire in 7 days.
+        </p>
+      </div>
+    </FormSheet>
   );
 }
 
@@ -379,7 +358,7 @@ function FriendRequestsSection({ requests }: { requests: FriendRequests | undefi
 function FriendsSkeleton() {
   return (
     <div className="flex flex-col gap-4 pb-6">
-      <Skeleton className="h-4 w-24 rounded-full" />
+      <Skeleton className="h-11 w-40 rounded-full" />
       <Skeleton className="h-64 rounded-[28px]" />
     </div>
   );

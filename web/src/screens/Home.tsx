@@ -4,13 +4,6 @@ import { toast } from 'sonner';
 import { Archive, ArrowUpRight, ChartPie, ChevronRight, Plus, UsersRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
   Empty,
   EmptyContent,
   EmptyDescription,
@@ -19,6 +12,7 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
+import { FormSheet } from '@/components/common/FormSheet';
 import { DraftsChip } from '@/components/expense/DraftsSheet';
 import { GROUP_EMOJI } from '@/components/group/group-emoji';
 import { DueToAddCard } from '@/components/recurring/DueToAdd';
@@ -92,7 +86,7 @@ export default function Home() {
           </>
         )}
       </section>
-      <NewGroupDialog
+      <NewGroupSheet
         open={createOpen}
         onOpenChange={setCreateOpen}
         defaultCurrency={sync.me.defaultCurrency}
@@ -300,7 +294,7 @@ function NoGroups({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-function NewGroupDialog({
+function NewGroupSheet({
   open,
   onOpenChange,
   defaultCurrency,
@@ -324,8 +318,7 @@ function NewGroupDialog({
     onOpenChange(next);
   };
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = () => {
     const name = values.name.trim();
     if (!name || createGroup.isPending) return;
     createGroup.mutate(
@@ -342,33 +335,17 @@ function NewGroupDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent>
-        <form onSubmit={submit} className="flex flex-col gap-4">
-          <DialogHeader>
-            <DialogTitle>New group</DialogTitle>
-          </DialogHeader>
-          <GroupFormFields values={values} onChange={setValues} />
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              className="rounded-full"
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              className="rounded-full"
-              disabled={!values.name.trim() || createGroup.isPending || !online}
-            >
-              Create group
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <FormSheet
+      open={open}
+      onOpenChange={handleOpenChange}
+      title="New group"
+      onSubmit={submit}
+      submitLabel="Create group"
+      pending={createGroup.isPending}
+      submitDisabled={!values.name.trim() || createGroup.isPending || !online}
+    >
+      <GroupFormFields values={values} onChange={setValues} />
+    </FormSheet>
   );
 }
 

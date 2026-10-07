@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
 import { ApiError, errorMessage } from '@/lib/api';
 import { useOnline } from '@/components/layout/OfflineBanner';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -19,7 +20,17 @@ import { useAcceptGuestClaim, useGuestClaimPreview, useSyncData } from '@/lib/qu
  * /claim/:token — someone tracked me as a guest in their group; accepting
  * moves the guest's expenses and balance onto my account.
  */
+/** Chrome-less landing page (AppShell hides the tab bar here); Back exits to Home. */
 export default function Claim() {
+  return (
+    <div className="flex flex-col gap-6 pb-6">
+      <PageHeader title="Claim your balance" />
+      <ClaimBody />
+    </div>
+  );
+}
+
+function ClaimBody() {
   const { token = '' } = useParams();
   const navigate = useNavigate();
   const online = useOnline();
@@ -39,8 +50,8 @@ export default function Claim() {
 
   if (preview.isPending) {
     return (
-      <div className="flex justify-center px-4 py-12">
-        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl bg-card p-8">
+      <div className="flex justify-center">
+        <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-card bg-card p-8">
           <Skeleton className="size-24 rounded-full" />
           <Skeleton className="h-7 w-40" />
           <Skeleton className="h-4 w-52" />
@@ -55,7 +66,7 @@ export default function Claim() {
   const notFound = preview.error instanceof ApiError && preview.error.status === 404;
   if (notFound) {
     return (
-      <div className="flex justify-center px-4 py-12">
+      <div className="flex justify-center">
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -74,7 +85,7 @@ export default function Claim() {
   const claim = preview.data;
   if (!claim) {
     return (
-      <div className="flex justify-center px-4 py-12">
+      <div className="flex justify-center">
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -98,13 +109,12 @@ export default function Claim() {
   const ownLink = sync !== undefined && claim.inviter.id === sync.me.id;
 
   return (
-    <div className="flex justify-center px-4 py-12">
-      <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl bg-card p-8 text-center shadow-[0_24px_48px_rgba(0,0,0,0.08)]">
-        <span className="eyebrow">Claim your balance</span>
+    <div className="flex justify-center">
+      <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-card bg-card p-8 text-center">
         <div className="flex size-24 items-center justify-center rounded-full bg-background text-5xl">
           <span aria-hidden="true">{claim.emoji}</span>
         </div>
-        <h1 className="text-2xl">{claim.groupName}</h1>
+        <h2 className="text-2xl">{claim.groupName}</h2>
         <p className="text-sm text-muted-foreground">
           {claim.inviter.name} has been tracking {claim.guest.name}&rsquo;s share here.{' '}
           <span className="font-medium text-foreground">

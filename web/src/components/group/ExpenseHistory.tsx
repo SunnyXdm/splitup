@@ -19,6 +19,7 @@ import {
 import { formatDateSafe } from '@/lib/dates';
 import { errorMessage } from '@/lib/api';
 import { formatMoney } from '@/lib/money';
+import { displayName, type NameCase } from '@/lib/names';
 import { useDeleteExpense } from '@/lib/queries';
 import { batchScopeHint, historyEntries, paymentRowAction } from '@/lib/settlement-batches';
 import type { HistoryEntry } from '@/lib/settlement-batches';
@@ -65,9 +66,11 @@ export default function ExpenseHistory({
     setReceiptOpen(true);
   };
 
-  const usersById = new Map(sync.users.map((u) => [u.id, u.name]));
+  const usersById = new Map(sync.users.map((u) => [u.id, u]));
   const groupsById = new Map(sync.groups.map((g) => [g.id, g.name]));
-  const nameOf = (id: number) => (id === meId ? 'You' : (usersById.get(id) ?? 'Someone'));
+  // "You" as a sentence subject, "you" mid-sentence ("Priya paid you").
+  const nameOf = (id: number, nameCase: NameCase = 'subject') =>
+    displayName(usersById.get(id), meId, { case: nameCase });
   const tagOf = (groupId: number | null) =>
     showGroupTag ? (groupId === null ? 'Direct' : (groupsById.get(groupId) ?? 'Group')) : undefined;
 
@@ -188,6 +191,7 @@ export default function ExpenseHistory({
                     paymentToDelete.shares.find((s) => s.paidCents > 0)?.userId ?? 0,
                   )} paid ${nameOf(
                     paymentToDelete.shares.find((s) => s.owedCents > 0)?.userId ?? 0,
+                    'object',
                   )} ${formatMoney(paymentToDelete.amountCents, paymentToDelete.currency)}. Deleting it restores the balance it settled.`
                 : ''}
             </AlertDialogDescription>
@@ -312,7 +316,7 @@ function ExpenseRow({
 }: {
   expense: Expense;
   meId: number;
-  nameOf: (id: number) => string;
+  nameOf: (id: number, nameCase?: NameCase) => string;
   tag?: string;
   onSelect?: (expense: Expense) => void;
 }) {
@@ -330,7 +334,7 @@ function ExpenseRow({
       type="button"
       onClick={clickable ? () => onSelect(e) : undefined}
       disabled={!clickable}
-      className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
     >
       <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-background">
         <CategoryIcon category={e.category} className="size-4 text-foreground/70" />
@@ -370,13 +374,13 @@ function BatchRow({
 }: {
   batch: SettlementBatch;
   rows: Expense[];
-  nameOf: (id: number) => string;
+  nameOf: (id: number, nameCase?: NameCase) => string;
   tag?: string;
   onOpen: () => void;
 }) {
   const payer = nameOf(batch.payerId);
-  const payee = nameOf(batch.payeeId);
-  const line = `${payer} paid ${payee === 'You' ? 'you' : payee}`;
+  const payee = nameOf(batch.payeeId, 'object');
+  const line = `${payer} paid ${payee}`;
   const hint = batchScopeHint(rows);
   const amount = formatMoney(batch.amountCents, batch.currency);
   return (
@@ -384,7 +388,7 @@ function BatchRow({
       type="button"
       disabled={batch.id < 0}
       onClick={onOpen}
-      className="flex min-h-14 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      className="flex min-h-14 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
       aria-label={`Payment: ${line} ${amount}${hint ? `, ${hint.toLowerCase()}` : ''}. Tap for the receipt.`}
     >
       <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-background text-muted-foreground">
@@ -413,7 +417,7 @@ function PaymentRow({
   onTap,
 }: {
   expense: Expense;
-  nameOf: (id: number) => string;
+  nameOf: (id: number, nameCase?: NameCase) => string;
   tag?: string;
   action: 'receipt' | 'delete' | 'none';
   onTap: () => void;
@@ -425,9 +429,9 @@ function PaymentRow({
       type="button"
       disabled={e.id < 0 || action === 'none'}
       onClick={onTap}
-      className="flex min-h-14 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      className="flex min-h-14 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
       aria-label={`Payment: ${payer ? nameOf(payer.userId) : 'Someone'} paid ${
-        recipient ? nameOf(recipient.userId) : 'someone'
+        recipient ? nameOf(recipient.userId, 'object') : 'someone'
       } ${formatMoney(e.amountCents, e.currency)}.${
         action === 'receipt'
           ? ' Tap for the receipt.'
@@ -442,7 +446,7 @@ function PaymentRow({
       <span className="flex min-w-0 flex-1 items-center gap-2 text-sm text-muted-foreground">
         <span className="truncate">
           {payer ? nameOf(payer.userId) : 'Someone'} paid{' '}
-          {recipient ? nameOf(recipient.userId) : 'someone'}
+          {recipient ? nameOf(recipient.userId, 'object') : 'someone'}
         </span>
         {tag ? <Tag tag={tag} /> : null}
       </span>

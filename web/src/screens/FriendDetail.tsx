@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { ArchiveRestore, BellRing, CircleHelp, Plus, ReceiptText, UserRound } from 'lucide-react';
+import { BackButton } from '@/components/layout/PageHeader';
+import { useDocumentTitle } from '@/lib/back-nav';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -32,6 +34,7 @@ export default function FriendDetail() {
   const navigate = useNavigate();
   const online = useOnline();
   const { data: sync, isFetching: syncFetching } = useSyncData();
+  useDocumentTitle(sync?.users.find((u) => u.id === friendId)?.name);
 
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | undefined>();
@@ -88,6 +91,7 @@ export default function FriendDetail() {
 
   return (
     <div className="flex flex-col gap-6 pb-6">
+      <BackButton className="-mb-2" />
       <header className="flex flex-col gap-4 rounded-[28px] bg-card p-6">
         <div className="flex items-center gap-4">
           <UserAvatar user={friend} size="lg" />

@@ -12,9 +12,11 @@ import { toast } from 'sonner';
 import DraftsSheet from '@/components/expense/DraftsSheet';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import { DraftsUiContext, type DraftsUi } from '@/components/expense/drafts-ui';
-import { useOnline } from '@/components/layout/OfflineBanner';
+import { AppChromeContext, type AppChrome } from '@/components/layout/app-chrome';
+import { OfflineBanner, useOnline } from '@/components/layout/OfflineBanner';
 import ThemeToggle from '@/components/layout/ThemeToggle';
 import { Button } from '@/components/ui/button';
+import { isChromelessPath } from '@/lib/back-nav';
 import { useDrafts } from '@/lib/draft-store';
 import type { DraftScope } from '@/lib/drafts';
 import { useSyncData } from '@/lib/queries';
@@ -46,10 +48,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const draftsUi = useMemo<DraftsUi>(
     () => ({
       openDrafts: (scope) => {
+        // The "N drafts ready" toast would sit over the sheet it just opened.
+        toast.dismiss(DRAFTS_TOAST_ID);
         setDraftsScope(scope);
         setDraftsOpen(true);
       },
       openDraft: (id) => {
+        toast.dismiss(DRAFTS_TOAST_ID);
         setReviewDraftId(id);
         setReviewOpen(true);
       },
@@ -57,6 +62,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
     [],
   );
   useDraftsReadyToast(online, drafts?.drafts.length ?? null, draftsUi);
+  // Screens with their own bottom primary action hide the FAB (useHideFab).
+  const [fabHiders, setFabHiders] = useState(0);
+  const chrome = useMemo<AppChrome>(
+    () => ({
+      hideFab: () => {
+        setFabHiders((n) => n + 1);
+        return () => setFabHiders((n) => n - 1);
+      },
+    }),
+    [],
+  );
+  const chromeless = isChromelessPath(pathname);
+  const showFab = !chromeless && fabHiders === 0;
   const incomingRequests = sync?.friendRequests?.incoming.length ?? 0;
   // Grid column of the active bottom tab (the FAB owns column 2), or null.
   const activeIndex = TABS.findIndex(({ to }) => isTabActive(to, pathname));
@@ -79,6 +97,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       : undefined;
 
   return (
+    <AppChromeContext.Provider value={chrome}>
     <DraftsUiContext.Provider value={draftsUi}>
       <div className="min-h-svh bg-background">
         {/* Desktop: floating white pill nav */}
@@ -89,7 +108,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-card py-2 pr-2 pl-6 shadow-[0_4px_24px_rgba(0,0,0,0.04)]">
             <Link
               to="/"
-              className="flex items-center gap-1 text-lg font-semibold tracking-tight text-foreground"
+              className="flex min-h-11 items-center gap-1 text-lg font-semibold tracking-tight text-foreground"
             >
               Splitup
               <span aria-hidden="true" className="size-1.5 rounded-full bg-signal" />
@@ -116,10 +135,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 );
               })}
             </nav>
-            <Button className="rounded-full px-4" onClick={() => setExpenseOpen(true)}>
-              <Plus data-icon="inline-start" aria-hidden="true" />
-              Add expense
-            </Button>
+            {chromeless ? null : (
+              <Button className="rounded-full px-4" onClick={() => setExpenseOpen(true)}>
+                <Plus data-icon="inline-start" aria-hidden="true" />
+                Add expense
+              </Button>
+            )}
           </div>
         </header>
 
@@ -139,7 +160,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         >
           <Link
             to="/"
-            className="flex items-center gap-1 text-lg font-semibold tracking-tight text-foreground"
+            className="flex min-h-11 items-center gap-1 text-lg font-semibold tracking-tight text-foreground"
           >
             Splitup
             <span aria-hidden="true" className="size-1.5 rounded-full bg-signal" />
@@ -150,11 +171,21 @@ export default function AppShell({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-3xl px-4 pt-6 pb-[calc(7.5rem+env(safe-area-inset-bottom))] md:pt-28 md:pb-16">
+        <main
+          className={cn(
+            'mx-auto w-full max-w-3xl px-4 pt-6 md:pt-28 md:pb-16',
+            // Clear the tab bar (3.5rem) + the FAB poking above it, with room to spare.
+            chromeless
+              ? 'pb-[calc(2rem+env(safe-area-inset-bottom))]'
+              : 'pb-[calc(8rem+env(safe-area-inset-bottom))]',
+          )}
+        >
+          <OfflineBanner className="mb-4" />
           {children}
         </main>
 
-        {/* Mobile: bottom tab bar + raised FAB */}
+        {/* Mobile: bottom tab bar + raised FAB (none on chromeless landing pages) */}
+        {chromeless ? null : (
         <nav
           aria-label="Primary"
           data-vt="nav"
@@ -185,16 +216,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 </Link>
               );
             })}
+            {showFab ? (
             <button
               type="button"
               aria-label="Add expense"
               onClick={() => setExpenseOpen(true)}
-              className="pressable absolute top-0 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_4px_24px_rgba(0,0,0,0.08)] outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              className="pressable absolute top-0 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_4px_24px_rgba(0,0,0,0.08)] outline-none focus-visible:ring-3 focus-visible:ring-focus-ring"
             >
               <Plus className="size-6" aria-hidden="true" />
             </button>
+            ) : null}
           </div>
         </nav>
+        )}
 
         <ExpenseForm
           open={expenseOpen}
@@ -212,8 +246,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
         />
       </div>
     </DraftsUiContext.Provider>
+    </AppChromeContext.Provider>
   );
 }
+
+const DRAFTS_TOAST_ID = 'drafts-ready';
 
 /**
  * Drafts are never submitted silently. When the app starts online with saved
@@ -229,7 +266,7 @@ function useDraftsReadyToast(online: boolean, count: number | null, ui: DraftsUi
     announce.current = false;
     if (count === 0) return;
     toast(count === 1 ? '1 draft ready to add' : `${count} drafts ready to add`, {
-      id: 'drafts-ready',
+      id: DRAFTS_TOAST_ID,
       duration: 10_000,
       action: {
         label: 'Review',
@@ -247,7 +284,7 @@ function SearchButton({ active }: { active: boolean }) {
       aria-label="Search all expenses"
       aria-current={active ? 'page' : undefined}
       className={cn(
-        'flex size-11 items-center justify-center rounded-full bg-card text-foreground shadow-[0_4px_24px_rgba(0,0,0,0.04)] outline-none pressable hover:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50',
+        'flex size-11 items-center justify-center rounded-full bg-card text-foreground shadow-[0_4px_24px_rgba(0,0,0,0.04)] outline-none pressable hover:text-muted-foreground focus-visible:ring-3 focus-visible:ring-focus-ring',
         active && 'bg-primary text-primary-foreground hover:text-primary-foreground/80',
       )}
     >
@@ -284,7 +321,7 @@ function RequestBadge({ count }: { count: number }) {
       aria-hidden="true"
       // Keyed by count: a new request re-pops the badge.
       key={count}
-      className="motion-badge absolute -top-1.5 -right-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-signal px-1 text-[10px] leading-none font-semibold text-white tabular-nums"
+      className="motion-badge absolute -top-1.5 -right-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-signal px-1 text-[10px] leading-none font-semibold text-signal-foreground tabular-nums"
     >
       {count > 9 ? '9+' : count}
     </span>

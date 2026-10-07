@@ -1,5 +1,6 @@
 import { Link } from 'react-router';
-import { Archive, ArchiveRestore, ChevronLeft } from 'lucide-react';
+import { Archive, ArchiveRestore } from 'lucide-react';
+import { PageHeader } from '@/components/layout/PageHeader';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -24,7 +25,7 @@ export default function ArchivedGroups() {
   if (!sync) {
     return (
       <div className="flex flex-col gap-4 pb-6">
-        <Skeleton className="h-4 w-24 rounded-full" />
+        <Skeleton className="h-11 w-40 rounded-full" />
         <Skeleton className="h-20 rounded-[28px]" />
         <Skeleton className="h-20 rounded-[28px]" />
       </div>
@@ -35,25 +36,11 @@ export default function ArchivedGroups() {
 
   return (
     <div className="flex flex-col gap-6 pb-6">
-      <header className="flex items-center gap-3">
-        <Button
-          variant="outline"
-          size="icon-lg"
-          className="size-10 rounded-full"
-          render={<Link to="/" aria-label="Back to Home" />}
-          nativeButton={false}
-        >
-          <ChevronLeft aria-hidden="true" />
-        </Button>
-        <div className="flex min-w-0 flex-col">
-          <span className="eyebrow">Groups</span>
-          <h1 className="truncate text-2xl font-medium tracking-tight">Archived</h1>
-        </div>
-      </header>
-      <p className="-mt-2 text-sm text-muted-foreground">
-        Hidden from your Home only. Balances here still count toward your totals, and new
-        activity that involves you brings a group back.
-      </p>
+      <PageHeader
+        eyebrow="Groups"
+        title="Archived"
+        description="Hidden from your Home only. Balances here still count toward your totals, and new activity that involves you brings a group back."
+      />
 
       {groups.length === 0 ? (
         <Empty className="rounded-[28px] bg-card py-12">

@@ -45,6 +45,7 @@
     --color-chart-2: var(--chart-2);
     --color-chart-1: var(--chart-1);
     --color-ring: var(--ring);
+    --color-focus-ring: var(--focus-ring);
     --color-input: var(--input);
     --color-border: var(--border);
     --color-destructive: var(--destructive);
@@ -65,6 +66,11 @@
     --color-owed: var(--owed);
     --color-owing: var(--owing);
     --color-signal: var(--signal);
+    --color-signal-foreground: var(--signal-foreground);
+    --color-warning: var(--warning);
+    --color-ink-surface: var(--ink-surface);
+    --color-ink-surface-foreground: var(--ink-surface-foreground);
+    --color-ink-surface-muted: var(--ink-surface-muted);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -72,12 +78,18 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    /* Surface radii (DESIGN.md §5): rounded-hero / rounded-card / rounded-panel.
+       Buttons, chips and inputs use rounded-full (pill). */
+    --radius-hero: 40px;
+    --radius-card: 28px;
+    --radius-panel: 20px;
 }
 
 /*
  * Splitup theme — Mastercard-inspired (see DESIGN.md).
  * Canvas cream, warm ink black, pill radii, one signal orange used sparingly.
- * Light-only by design.
+ * Three palettes: light (here), dark and AMOLED (below). Every text pair is
+ * AA (≥4.5:1) on its surface, including on its own 10% tint.
  */
 :root {
     color-scheme: light;
@@ -92,13 +104,16 @@
     --secondary: #ffffff;
     --secondary-foreground: #141413;
     --muted: #e9e5e0;
-    --muted-foreground: #696969;
+    --muted-foreground: #5e5e5e;
     --accent: #ece7e2;
     --accent-foreground: #141413;
-    --destructive: #cf4500;
+    /* A true red, kept apart from the clay --owing (money direction). */
+    --destructive: #b42318;
     --border: rgb(20 20 19 / 0.12);
     --input: rgb(20 20 19 / 0.18);
     --ring: rgb(20 20 19 / 0.4);
+    /* Focus-visible rings: solid, ≥3:1 against canvas, card and popover. */
+    --focus-ring: #57524c;
     --chart-1: #f37338;
     --chart-2: #9a3a0a;
     --chart-3: #3860be;
@@ -118,6 +133,21 @@
     --owing: #9a3a0a;
     /* decorative orbital-arc / eyebrow-dot orange; never a CTA color */
     --signal: #f37338;
+    /* Text on a signal fill (badges): ink, in every theme. */
+    --signal-foreground: #141413;
+    /* Notices ("check this", scan warnings): warm amber, not clay, not red.
+       Text/icon colour; tint surfaces with bg-warning/10. */
+    --warning: #8a5300;
+    /* Hero surface: the ink stadium. In dark themes it stays an elevated dark
+       surface with a hairline (not a cream slab) — see @utility ink-surface. */
+    --ink-surface: #141413;
+    --ink-surface-foreground: #f3f0ee;
+    --ink-surface-muted: rgb(243 240 238 / 0.72);
+    --ink-surface-ring: transparent;
+    /* Elevation (DESIGN.md §6): cards are flat; sheets and dialogs level 2. */
+    --shadow-level-1: 0 4px 24px rgb(0 0 0 / 0.04);
+    --shadow-level-2: 0 24px 48px rgb(0 0 0 / 0.08);
+    --shadow-sheet: 0 -24px 48px rgb(0 0 0 / 0.08);
 }
 
 /* Dark: the same warm-ink family inverted — cream text on near-black, pills flip. */
@@ -137,10 +167,11 @@
     --muted-foreground: #a5a09a;
     --accent: #2a2825;
     --accent-foreground: #f3f0ee;
-    --destructive: #ff6d2e;
+    --destructive: #ff8b7a;
     --border: rgb(243 240 238 / 0.14);
     --input: rgb(243 240 238 / 0.2);
     --ring: rgb(243 240 238 / 0.4);
+    --focus-ring: #b8b1a9;
     --sidebar: #1f1e1c;
     --sidebar-foreground: #f3f0ee;
     --sidebar-primary: #f3f0ee;
@@ -152,6 +183,13 @@
     --owed: #7fc99e;
     --owing: #d99a6c;
     --signal: #f37338;
+    --warning: #f0b54a;
+    --ink-surface: #232120;
+    --ink-surface-foreground: #f3f0ee;
+    --ink-surface-muted: #b3ada6;
+    --ink-surface-ring: rgb(243 240 238 / 0.1);
+    --shadow-level-2: 0 24px 48px rgb(0 0 0 / 0.4);
+    --shadow-sheet: 0 -24px 48px rgb(0 0 0 / 0.45);
 }
 
 /* AMOLED: true black for OLED screens. Applied ALONGSIDE .dark (so all
@@ -167,11 +205,13 @@
     --border: rgb(243 240 238 / 0.16);
     --input: rgb(243 240 238 / 0.22);
     --sidebar: #0c0b0a;
+    --ink-surface: #121110;
+    --ink-surface-ring: rgb(243 240 238 / 0.14);
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-focus-ring;
     }
   body {
     @apply bg-background text-foreground;
@@ -184,6 +224,49 @@
     font-weight: 500;
     letter-spacing: -0.02em;
     }
+  /* Page H1s receive focus after navigation (screen readers); no ring. */
+  h1[tabindex='-1']:focus {
+    outline: none;
+    }
+}
+
+/* The hero surface (balance stadium): ink on cream in light; an elevated dark
+   panel with a hairline in dark/AMOLED, so it never becomes a cream slab.
+   Pair with rounded-hero. Muted text inside: text-ink-surface-muted. */
+@utility ink-surface {
+  background-color: var(--ink-surface);
+  color: var(--ink-surface-foreground);
+  box-shadow: inset 0 0 0 1px var(--ink-surface-ring);
+}
+
+/* Elevation: shadow-level-1 (nav pill), shadow-level-2 (sheets, dialogs,
+   floating chrome). Cards on canvas take no shadow. */
+@utility shadow-level-1 {
+  box-shadow: var(--shadow-level-1);
+}
+@utility shadow-level-2 {
+  box-shadow: var(--shadow-level-2);
+}
+@utility shadow-sheet {
+  box-shadow: var(--shadow-sheet);
+}
+
+/* Minimum hit area for visually compact controls: an invisible ::after
+   centred on the element — 44px tall, and up to 4px wider on each side (capped
+   at 44px) so neighbours 8px apart never overlap. Needs a positioned element
+   (relative/absolute) that doesn't clip. Prefer real ≥44px boxes for primary
+   and icon controls; this is for compact text buttons, chips and row actions.
+   Button sizes below h-11 include it. */
+@utility hit-area {
+  &::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, min(44px, calc(100% + 8px)));
+    height: max(100%, 44px);
+    translate: -50% -50%;
+  }
 }
 
 @utility eyebrow {

@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useSyncExternalStore } from 'react';
 import { WifiOff } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 function subscribe(callback: () => void) {
   window.addEventListener('online', callback);
@@ -19,16 +20,26 @@ export function useOnline(): boolean {
   );
 }
 
-export function OfflineBanner() {
+/**
+ * Slim in-flow strip shown while offline. AppShell renders it at the top of
+ * <main>, under the header, so it never floats over content or actions.
+ */
+export function OfflineBanner({ className }: { className?: string }) {
   const online = useOnline();
   if (online) return null;
   return (
     <div
       role="status"
-      className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm whitespace-nowrap text-primary-foreground shadow-[0_4px_24px_rgba(0,0,0,0.08)] md:bottom-6"
+      className={cn(
+        'flex items-center gap-2.5 rounded-full bg-muted px-4 py-2 text-sm text-muted-foreground',
+        className,
+      )}
     >
-      <WifiOff className="size-4" aria-hidden="true" />
-      Offline — showing saved data
+      <WifiOff className="size-4 shrink-0" aria-hidden="true" />
+      <span>
+        <span className="font-medium text-foreground">You&rsquo;re offline</span> — showing saved
+        data. New expenses are saved as drafts.
+      </span>
     </div>
   );
 }

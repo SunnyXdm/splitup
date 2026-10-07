@@ -363,3 +363,34 @@ When refining existing screens generated with this design system:
 - The exact "whisper" cream tone used for ghost-watermark headlines behind circular portraits reads between `#E8E2DA` and `#D1CDC7` in captures; the precise value varies per section.
 - Third-party consent orange (`#CF4500`) is Mastercard's documented consent signal and should not be confused with any marketing CTA color.
 - The Mastercard logo mark (red `#EB001B` + yellow `#F79E1B`) is a brand asset, not a UI palette entry.
+
+## 10. Splitup Application Rules
+
+The sections above describe the source language. These are the rules the app's code implements (tokens live in `web/src/index.css`).
+
+### Surfaces, radius & elevation
+- Radius utilities: `rounded-hero` (40px — the balance stadium), `rounded-card` (28px — list cards, landing cards, sheet tops), `rounded-panel` (20px — inner panels, notices inside cards), `rounded-full` (buttons, chips, inputs, avatars). Nothing in 8–16px.
+- Cards sit **flat** on the canvas: no shadow, no `ring-1` hairline. Sheets and dialogs are the only elevated surfaces (`shadow-level-2`; bottom sheets `shadow-sheet`, the same halo cast upward). The floating nav pill uses `shadow-level-1`.
+- A sheet opened from inside another sheet gets its own scrim, so the child separates from its parent.
+- Heroes use `ink-surface` (+ `text-ink-surface-muted` for secondary text): ink on cream in light; in dark/AMOLED an elevated dark panel with a hairline — never a cream slab.
+
+### Colour roles
+- `signal` (#F37338): decoration only — eyebrow dot, orbit arcs, one attention dot/badge. Text on a signal fill is ink (`text-signal-foreground`).
+- `warning` (amber; #8A5300 light / #F0B54A dark): notices ("check this", scan warnings). Text/icon colour; tint with `bg-warning/10`.
+- `owed` / `owing` (green / clay): money direction only, always with words.
+- `destructive` (red; #B42318 light / #FF8B7A dark): delete/undo/errors. Kept apart from clay. Passes AA on its own 10–20% tint.
+- `muted-foreground` (#5E5E5E light): ≥4.5:1 on canvas, card and muted.
+
+### Action language
+- **Primary** — `<Button size="cta">`: ink pill, h-12, one per surface (sheet footers: `w-full`).
+- **Secondary** — `<Button variant="outline" size="pill">`: outlined pill, h-11.
+- **Tertiary** — `variant="ghost"`: text button.
+- Destructive actions live in ⋯ menus or confirm dialogs, not beside the primary.
+- Every tap target is ≥44×44px. Compact button sizes (`sm`, `xs`, `icon-*`, default) stay visually small but carry an invisible 44px hit area (`hit-area` utility); use it on custom compact controls too.
+
+### Page skeleton
+- Every screen starts with `PageHeader` (`components/layout/PageHeader.tsx`): back chevron on pushed pages, optional eyebrow kicker, H1 24px/500/−2%, trailing actions. Tab roots (Home, Friends, Activity, Account) have no back chevron.
+- Back = history back when the previous entry is in-app, else the parent tab.
+- A new page opens scrolled to the top; Back restores where you were.
+- Modals are bottom sheets (`FormSheet` for short forms): title, scrollable body, sticky footer with the `cta` pill. Centered dialogs are only for confirmations (`AlertDialog`).
+- Offline state is a slim strip under the header, never a floating pill. Toasts sit above the bottom nav on mobile.

@@ -214,7 +214,7 @@ function TopRow({
     <button
       type="button"
       onClick={() => onSelect(e)}
-      className="focus-visible:ring-ring/50 flex min-h-16 w-full items-center gap-3 px-2 py-3 text-left outline-none focus-visible:ring-2"
+      className="focus-visible:ring-focus-ring flex min-h-16 w-full items-center gap-3 px-2 py-3 text-left outline-none focus-visible:ring-2"
     >
       {content}
     </button>

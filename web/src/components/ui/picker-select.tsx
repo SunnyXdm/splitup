@@ -70,7 +70,7 @@ function PickerSelect({
         aria-labelledby={nameRef ? `${nameRef} ${valueId}` : undefined}
         onClick={() => setOpen(true)}
         className={cn(
-          "flex h-11 w-full items-center justify-between gap-2 rounded-full border border-input bg-transparent px-4 text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50",
+          "relative flex h-11 w-full items-center justify-between gap-2 rounded-full border border-input bg-transparent px-4 text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-focus-ring disabled:cursor-not-allowed disabled:opacity-50",
           className
         )}
       >
@@ -111,7 +111,7 @@ function PickerSelect({
                       setOpen(false)
                     }}
                     className={cn(
-                      "flex min-h-12 w-full items-center gap-3 rounded-2xl px-3 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50",
+                      "flex min-h-12 w-full items-center gap-3 rounded-2xl px-3 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-focus-ring disabled:opacity-50",
                       isSelected && "bg-accent"
                     )}
                   >
