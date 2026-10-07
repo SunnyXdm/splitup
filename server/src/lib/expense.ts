@@ -94,6 +94,10 @@ export function editableExpenseOr404(me: UserRow, id: number): ExpenseRow {
   } else if (!sharesOf(row.id).some((s) => s.user_id === me.id)) {
     throw NOT_FOUND();
   }
+  // Rows of a settle-up batch move together: only DELETE /api/settlements/:id.
+  if (row.settlement_batch_id != null) {
+    throw new HTTPException(409, { message: 'part of a settle-up' });
+  }
   return row;
 }
 

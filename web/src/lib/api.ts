@@ -68,6 +68,9 @@ export function errorMessage(err: unknown): string {
   if (err instanceof ApiError && err.status === 409 && err.message === 'group deleted') {
     return 'One of the groups this was recorded in has been deleted.';
   }
+  if (err instanceof ApiError && err.status === 409 && err.message === 'part of a settle-up') {
+    return 'This payment is part of a settle-up — open it and use Undo payment instead.';
+  }
   if (err instanceof Error && err.message) return err.message;
   return 'Something went wrong — please try again.';
 }
