@@ -1,4 +1,4 @@
-import type { Expense, ExpenseInput, SyncData } from './types';
+import type { Expense, ExpenseInput, SettlementBatch, SyncData } from './types';
 
 /**
  * Pure cache transforms for optimistic mutations. Temp expenses get negative
@@ -118,15 +118,85 @@ export function withRestoredExpense(sync: SyncData, prev: Expense): SyncData {
 
 /** Replaces a row with the server's response (e.g. after a successful update). */
 export function withServerExpense(sync: SyncData, real: Expense): SyncData {
-  return { ...sync, expenses: sync.expenses.map((e) => (e.id === real.id ? real : e)) };
+  return {
+    ...sync,
+    expenses: sync.expenses.map((e) => (e.id === real.id ? real : e)),
+  };
 }
 
 /** True for optimistic rows that don't exist server-side yet. */
 export const isTempId = (id: number): boolean => id < 0;
 
-/** The dataset without optimistic temp rows — what is safe to persist. */
+/** The dataset without optimistic temp rows (and temp batches) — what is safe to persist. */
 export function withoutTempRows(sync: SyncData): SyncData {
-  return sync.expenses.some((e) => isTempId(e.id))
-    ? { ...sync, expenses: sync.expenses.filter((e) => !isTempId(e.id)) }
-    : sync;
+  let next = sync;
+  if (sync.expenses.some((e) => isTempId(e.id))) {
+    next = { ...next, expenses: sync.expenses.filter((e) => !isTempId(e.id)) };
+  }
+  if (sync.settlementBatches?.some((b) => isTempId(b.id))) {
+    next = {
+      ...next,
+      settlementBatches: sync.settlementBatches.filter((b) => !isTempId(b.id)),
+    };
+  }
+  return next;
+}
+
+/** Adds (or replaces, by id) a settle-up batch. */
+export function withBatch(sync: SyncData, batch: SettlementBatch): SyncData {
+  const rest = (sync.settlementBatches ?? []).filter((b) => b.id !== batch.id);
+  return { ...sync, settlementBatches: [...rest, batch] };
+}
+
+/** Drops a batch only (rows untouched) — e.g. the temp batch of a failed settle. */
+export function withoutBatchOnly(sync: SyncData, batchId: number): SyncData {
+  if (!sync.settlementBatches?.some((b) => b.id === batchId)) return sync;
+  return {
+    ...sync,
+    settlementBatches: sync.settlementBatches.filter((b) => b.id !== batchId),
+  };
+}
+
+/**
+ * Swaps the optimistic temp batch for the server's once a settle succeeds. If
+ * a refetch already brought the real batch in, the temp one is just dropped.
+ */
+export function withResolvedBatch(sync: SyncData, tempId: number, real: SettlementBatch): SyncData {
+  const batches = sync.settlementBatches ?? [];
+  const hasReal = batches.some((b) => b.id === real.id);
+  return {
+    ...sync,
+    settlementBatches: hasReal
+      ? batches.filter((b) => b.id !== tempId)
+      : batches.some((b) => b.id === tempId)
+        ? batches.map((b) => (b.id === tempId ? real : b))
+        : [...batches, real],
+  };
+}
+
+/** Optimistic undo: the batch and every row recorded for it disappear together. */
+export function withoutBatch(sync: SyncData, batchId: number): SyncData {
+  const rows = new Set(
+    (sync.settlementBatches?.find((b) => b.id === batchId)?.rows ?? []).concat(
+      sync.expenses.filter((e) => e.settlementBatchId === batchId).map((e) => e.id),
+    ),
+  );
+  return {
+    ...withoutBatchOnly(sync, batchId),
+    expenses: sync.expenses.filter((e) => !rows.has(e.id)),
+  };
+}
+
+/**
+ * Rollback of an optimistic undo: re-inserts the batch and those of its rows
+ * that are still absent. If a refetch already shows them, nothing changes.
+ */
+export function withRestoredBatch(
+  sync: SyncData,
+  batch: SettlementBatch,
+  rows: readonly Expense[],
+): SyncData {
+  let next = sync;
+  for (const row of rows) next = withRestoredExpense(next, row);
+  return next.settlementBatches?.some((b) => b.id === batch.id) ? next : withBatch(next, batch);
 }

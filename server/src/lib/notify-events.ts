@@ -7,6 +7,7 @@ import {
   friendAcceptedPayload,
   friendRequestPayload,
   settlementPayload,
+  settlementUndonePayload,
   type PayloadShare,
 } from './push-payload';
 
@@ -96,6 +97,16 @@ export function notifySettlement(
     [counterpartyId],
     settlementPayload({ id: actor.id, name: actor.name }, counterpartyId, rows, currency),
   );
+}
+
+/** A settle-up batch was undone: one notification to the other party. */
+export function notifySettlementUndone(
+  actor: Actor,
+  batch: { payerId: number; payeeId: number; amountCents: number; currency: string },
+): void {
+  const other = batch.payerId === actor.id ? batch.payeeId : batch.payerId;
+  if (other === actor.id) return;
+  notifyUsers([other], settlementUndonePayload({ id: actor.id, name: actor.name }, batch));
 }
 
 /**

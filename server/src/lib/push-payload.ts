@@ -181,6 +181,20 @@ export function settlementPayload(
   return { title: 'Splitup', body, url: `/friends/${actor.id}`, tag: `settle-${actor.id}` };
 }
 
+/** A settle-up batch was undone: tell the other party which way the cash had gone. */
+export function settlementUndonePayload(
+  actor: { id: number; name: string },
+  batch: { payerId: number; payeeId: number; amountCents: number; currency: string },
+): PushPayload {
+  const who = clip(actor.name, 30);
+  const amount = formatAmount(batch.amountCents, batch.currency);
+  const body =
+    batch.payerId === actor.id
+      ? `${who} undid a payment of ${amount} to you`
+      : `${who} undid your payment of ${amount}`;
+  return { title: 'Splitup', body, url: `/friends/${actor.id}`, tag: `settle-${actor.id}` };
+}
+
 export function friendRequestPayload(actor: { id: number; name: string }): PushPayload {
   return {
     title: 'Friend request',

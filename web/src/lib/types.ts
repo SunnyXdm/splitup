@@ -52,6 +52,29 @@ export interface Expense {
   createdBy: number;
   createdAt: string;
   updatedAt: string;
+  /** Settle-up batch this payment row belongs to. Optional: absent from older caches. */
+  settlementBatchId?: number | null;
+}
+
+export type SettlementMethod = 'cash' | 'upi' | 'bank' | 'other';
+
+/** One settle-up: the cash that actually moved, and the payment rows it was recorded as. */
+export interface SettlementBatch {
+  id: number;
+  payerId: number;
+  payeeId: number;
+  /** Net cash moved payer → payee; always positive. */
+  amountCents: number;
+  currency: string;
+  /** YYYY-MM-DD */
+  date: string;
+  method: SettlementMethod | null;
+  reference: string | null;
+  note: string | null;
+  createdBy: number;
+  createdAt: string;
+  /** Live payment-row expense ids. */
+  rows: number[];
 }
 
 export type ActivityType =
@@ -59,6 +82,7 @@ export type ActivityType =
   | 'expense_updated'
   | 'expense_deleted'
   | 'payment_added'
+  | 'payment_undone'
   | 'group_created'
   | 'group_renamed'
   | 'member_joined'
@@ -101,6 +125,8 @@ export interface SyncData {
   friendIds: number[];
   groups: Group[];
   expenses: Expense[];
+  /** Optional: absent from older servers and older persisted payloads. */
+  settlementBatches?: SettlementBatch[];
   activity: ActivityItem[];
   /** Optional: absent from older servers and older persisted payloads. */
   friendRequests?: FriendRequests;

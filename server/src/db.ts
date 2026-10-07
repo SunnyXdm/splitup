@@ -132,6 +132,36 @@ db.exec(
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_client_key ON expenses(created_by, client_key) WHERE client_key IS NOT NULL',
 );
 
+// One settle-up = one batch: the cash that changed hands (net direction and
+// amount) plus optional details, linking every payment row it was recorded
+// as. Rows recorded before batches existed keep settlement_batch_id NULL.
+db.exec(`
+CREATE TABLE IF NOT EXISTS settlement_batches (
+  id INTEGER PRIMARY KEY,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  payer_id INTEGER NOT NULL REFERENCES users(id),
+  payee_id INTEGER NOT NULL REFERENCES users(id),
+  amount_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  date TEXT NOT NULL,
+  method TEXT,
+  reference TEXT,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_settlement_batches_payer ON settlement_batches(payer_id);
+CREATE INDEX IF NOT EXISTS idx_settlement_batches_payee ON settlement_batches(payee_id);
+`);
+if (!expenseCols.some((c) => c.name === 'settlement_batch_id')) {
+  db.exec(
+    'ALTER TABLE expenses ADD COLUMN settlement_batch_id INTEGER REFERENCES settlement_batches(id)',
+  );
+}
+db.exec(
+  'CREATE INDEX IF NOT EXISTS idx_expenses_settlement_batch ON expenses(settlement_batch_id) WHERE settlement_batch_id IS NOT NULL',
+);
+
 // Small key/value store for server-generated config (e.g. VAPID keys) that
 // must survive restarts.
 db.exec(`
@@ -183,6 +213,21 @@ export interface ExpenseRow {
   updated_at: string;
   deleted_at: string | null;
   client_key: string | null;
+  settlement_batch_id: number | null;
+}
+export interface SettlementBatchRow {
+  id: number;
+  created_by: number;
+  payer_id: number;
+  payee_id: number;
+  amount_cents: number;
+  currency: string;
+  date: string;
+  method: string | null;
+  reference: string | null;
+  note: string | null;
+  created_at: string;
+  deleted_at: string | null;
 }
 export interface ShareRow {
   expense_id: number;

@@ -8,9 +8,15 @@ import {
 import { del } from 'idb-keyval';
 import { api } from './api';
 import { broadcastSignOut, clearSignedOut, markSignedOut } from './auth-session';
+import { netCash } from './settlement-batches';
 import {
   tempExpenseId,
+  withBatch,
   withCreatedExpense,
+  withResolvedBatch,
+  withRestoredBatch,
+  withoutBatch,
+  withoutBatchOnly,
   withResolvedTemp,
   withRestoredExpense,
   withRestoredUpdate,
@@ -28,6 +34,8 @@ import type {
   Group,
   InvitePreview,
   Me,
+  SettlementBatch,
+  SettlementMethod,
   SyncData,
   User,
 } from './types';
@@ -70,7 +78,10 @@ export function useExchangeSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (idToken: string) =>
-      api<{ me: Me }>('/api/auth/session', { method: 'POST', body: { idToken } }),
+      api<{ me: Me }>('/api/auth/session', {
+        method: 'POST',
+        body: { idToken },
+      }),
     onSuccess: async ({ me }) => {
       // A different account than the cached dataset's owner: never let the
       // previous user's data render (or persist) under the new session.
@@ -125,8 +136,15 @@ export function useCreateGroup() {
 
 export function useUpdateGroup() {
   return useMutation({
-    mutationFn: ({ id, ...body }: { id: number; name?: string; emoji?: string; currency?: string }) =>
-      api<Group>(`/api/groups/${id}`, { method: 'PATCH', body }),
+    mutationFn: ({
+      id,
+      ...body
+    }: {
+      id: number;
+      name?: string;
+      emoji?: string;
+      currency?: string;
+    }) => api<Group>(`/api/groups/${id}`, { method: 'PATCH', body }),
     ...useSyncInvalidation(),
   });
 }
@@ -148,14 +166,18 @@ export function useLeaveGroup() {
 export function useCreateInvite() {
   return useMutation({
     mutationFn: (groupId: number) =>
-      api<{ token: string; url: string }>(`/api/groups/${groupId}/invites`, { method: 'POST' }),
+      api<{ token: string; url: string }>(`/api/groups/${groupId}/invites`, {
+        method: 'POST',
+      }),
   });
 }
 
 export function useRemoveGroupMember() {
   return useMutation({
     mutationFn: ({ groupId, userId }: { groupId: number; userId: number }) =>
-      api<void>(`/api/groups/${groupId}/members/${userId}`, { method: 'DELETE' }),
+      api<void>(`/api/groups/${groupId}/members/${userId}`, {
+        method: 'DELETE',
+      }),
     ...useSyncInvalidation(),
   });
 }
@@ -163,7 +185,10 @@ export function useRemoveGroupMember() {
 export function useAddGroupMember() {
   return useMutation({
     mutationFn: ({ groupId, userId }: { groupId: number; userId: number }) =>
-      api<Group>(`/api/groups/${groupId}/members`, { method: 'POST', body: { userId } }),
+      api<Group>(`/api/groups/${groupId}/members`, {
+        method: 'POST',
+        body: { userId },
+      }),
     ...useSyncInvalidation(),
   });
 }
@@ -229,7 +254,9 @@ export function useDeleteFriendRequest() {
 export function useCreateFriendInvite() {
   return useMutation({
     mutationFn: () =>
-      api<{ token: string; url: string }>('/api/friends/invites', { method: 'POST' }),
+      api<{ token: string; url: string }>('/api/friends/invites', {
+        method: 'POST',
+      }),
   });
 }
 
@@ -244,7 +271,9 @@ export function useFriendInvitePreview(token: string) {
 export function useAcceptFriendInvite() {
   return useMutation({
     mutationFn: (token: string) =>
-      api<{ user: User }>(`/api/friends/invites/${token}/accept`, { method: 'POST' }),
+      api<{ user: User }>(`/api/friends/invites/${token}/accept`, {
+        method: 'POST',
+      }),
     ...useSyncInvalidation(),
   });
 }
@@ -316,7 +345,16 @@ export interface SettlementInput {
   watermarkCount: number;
   /** Idempotency key so a retried POST can't record the payments twice. */
   clientKey?: string;
-  rows: { groupId: number | null; payerId: number; recipientId: number; amountCents: number }[];
+  rows: {
+    groupId: number | null;
+    payerId: number;
+    recipientId: number;
+    amountCents: number;
+  }[];
+  /** Optional receipt details, stored on the settle-up batch. */
+  method?: SettlementMethod | null;
+  reference?: string;
+  note?: string;
 }
 
 /**
@@ -330,10 +368,14 @@ export function useSettleUp() {
   return useMutation({
     mutationKey: EXPENSE_WRITE_KEY,
     mutationFn: (body: SettlementInput) =>
-      api<{ expenses: Expense[] }>('/api/settlements', { method: 'POST', body }),
+      api<{ expenses: Expense[]; batch?: SettlementBatch | null }>('/api/settlements', {
+        method: 'POST',
+        body,
+      }),
     onMutate: async (body) => {
       await qc.cancelQueries({ queryKey: SYNC_KEY });
       const tempIds = body.rows.map(() => tempExpenseId());
+      const tempBatchId = tempExpenseId();
       patchSync(qc, (sync) => {
         let next = sync;
         body.rows.forEach((row, i) => {
@@ -349,30 +391,91 @@ export function useSettleUp() {
               notes: null,
               isPayment: true,
               shares: [
-                { userId: row.payerId, paidCents: row.amountCents, owedCents: 0 },
-                { userId: row.recipientId, paidCents: 0, owedCents: row.amountCents },
+                {
+                  userId: row.payerId,
+                  paidCents: row.amountCents,
+                  owedCents: 0,
+                },
+                {
+                  userId: row.recipientId,
+                  paidCents: 0,
+                  owedCents: row.amountCents,
+                },
               ],
             },
             sync.me.id,
             tempIds[i],
           );
         });
-        return next;
+        // A temp batch so the settle already reads as one receipt.
+        const temp = new Set(tempIds);
+        next = {
+          ...next,
+          expenses: next.expenses.map((e) =>
+            temp.has(e.id) ? { ...e, settlementBatchId: tempBatchId } : e,
+          ),
+        };
+        const cash = netCash(body.rows, sync.me.id, body.counterpartyId);
+        return withBatch(next, {
+          id: tempBatchId,
+          ...cash,
+          currency: body.currency,
+          date: body.date,
+          method: body.method ?? null,
+          reference: body.reference?.trim() || null,
+          note: body.note?.trim() || null,
+          createdBy: sync.me.id,
+          createdAt: new Date().toISOString(),
+          rows: tempIds,
+        });
       });
-      return { tempIds };
+      return { tempIds, tempBatchId };
     },
-    onSuccess: ({ expenses }, _body, ctx) => {
+    onSuccess: ({ expenses, batch }, _body, ctx) => {
       patchSync(qc, (sync) => {
         // The server returns one expense per row, in row order.
         let next = sync;
         ctx.tempIds.forEach((tempId, i) => {
           next = expenses[i] ? withResolvedTemp(next, tempId, expenses[i]) : next;
         });
-        return next;
+        return batch
+          ? withResolvedBatch(next, ctx.tempBatchId, batch)
+          : withoutBatchOnly(next, ctx.tempBatchId);
       });
     },
     onError: (_err, _body, ctx) => {
-      if (ctx) patchSync(qc, (sync) => withoutExpenses(sync, ctx.tempIds));
+      if (ctx) {
+        patchSync(qc, (sync) =>
+          withoutBatchOnly(withoutExpenses(sync, ctx.tempIds), ctx.tempBatchId),
+        );
+      }
+    },
+    onSettled: () => invalidateIfLastWrite(qc),
+  });
+}
+
+/**
+ * Undo a whole settle-up: the batch and all of its rows vanish optimistically;
+ * a failure puts back exactly what this mutation removed.
+ */
+export function useUndoSettlement() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: EXPENSE_WRITE_KEY,
+    mutationFn: (batchId: number) => api<void>(`/api/settlements/${batchId}`, { method: 'DELETE' }),
+    onMutate: async (batchId) => {
+      await qc.cancelQueries({ queryKey: SYNC_KEY });
+      const sync = qc.getQueryData<SyncData>(SYNC_KEY);
+      const batch = sync?.settlementBatches?.find((b) => b.id === batchId);
+      const rows = sync?.expenses.filter((e) => e.settlementBatchId === batchId) ?? [];
+      patchSync(qc, (s) => withoutBatch(s, batchId));
+      return { batch, rows };
+    },
+    onError: (_err, _id, ctx) => {
+      if (ctx?.batch) {
+        const { batch, rows } = ctx;
+        patchSync(qc, (sync) => withRestoredBatch(sync, batch, rows));
+      }
     },
     onSettled: () => invalidateIfLastWrite(qc),
   });

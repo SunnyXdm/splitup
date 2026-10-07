@@ -7,6 +7,7 @@ import {
   type ExpenseRow,
   type FriendRequestRow,
   type GroupRow,
+  type SettlementBatchRow,
   type ShareRow,
   type UserRow,
 } from '../db';
@@ -15,6 +16,7 @@ import {
   toExpense,
   toGroup,
   toMe,
+  toSettlementBatch,
   toUser,
   type SyncData,
   type User,
@@ -96,6 +98,25 @@ app.get('/', (c) => {
     else sharesByExpense.set(s.expense_id, [s]);
   }
 
+  // Settle-up batches I took part in. Rows are limited to the expenses I can
+  // see (a deleted group's rows drop out); a batch with none left is omitted.
+  const rowsByBatch = new Map<number, number[]>();
+  for (const e of [...expenseRows].sort((a, b) => a.id - b.id)) {
+    if (e.settlement_batch_id == null) continue;
+    const list = rowsByBatch.get(e.settlement_batch_id);
+    if (list) list.push(e.id);
+    else rowsByBatch.set(e.settlement_batch_id, [e.id]);
+  }
+  const settlementBatches = db
+    .prepare<[number, number, number], SettlementBatchRow>(
+      `SELECT * FROM settlement_batches
+       WHERE deleted_at IS NULL AND (payer_id = ? OR payee_id = ? OR created_by = ?)
+       ORDER BY date DESC, id DESC`,
+    )
+    .all(me.id, me.id, me.id)
+    .filter((b) => rowsByBatch.has(b.id))
+    .map((b) => toSettlementBatch(b, rowsByBatch.get(b.id)!));
+
   // users = me + friends + co-members (+ share-holders of visible expenses, so
   // shares never reference a user the client doesn't have, e.g. ex-members).
   const userIds = new Set<number>([me.id, ...friendIds]);
@@ -166,6 +187,7 @@ app.get('/', (c) => {
     friendIds,
     groups: groupRows.map((g) => toGroup(g, membersByGroup.get(g.id) ?? [])),
     expenses: expenseRows.map((e) => toExpense(e, sharesByExpense.get(e.id) ?? [])),
+    settlementBatches,
     activity: activityRows.map(toActivity),
     friendRequests: { incoming, outgoing },
     features: { receiptScan: receiptScanEnabled() },

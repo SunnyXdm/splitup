@@ -1,7 +1,14 @@
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import type { ActivityRow, ExpenseRow, GroupRow, ShareRow, UserRow } from '../db';
-import { CATEGORIES } from '../validate';
+import type {
+  ActivityRow,
+  ExpenseRow,
+  GroupRow,
+  SettlementBatchRow,
+  ShareRow,
+  UserRow,
+} from '../db';
+import { CATEGORIES, SETTLEMENT_METHODS } from '../validate';
 
 /** Wire shapes — mirror web/src/lib/types.ts exactly. */
 export type Category = (typeof CATEGORIES)[number];
@@ -47,6 +54,28 @@ export interface Expense {
   createdBy: number;
   createdAt: string;
   updatedAt: string;
+  /** The settle-up batch this payment row belongs to; null for everything else. */
+  settlementBatchId: number | null;
+}
+
+export type SettlementMethod = (typeof SETTLEMENT_METHODS)[number];
+
+/** One settle-up: the cash that actually moved, and the rows it was recorded as. */
+export interface SettlementBatch {
+  id: number;
+  payerId: number;
+  payeeId: number;
+  /** Net cash moved payer → payee; always positive. */
+  amountCents: number;
+  currency: string;
+  date: string;
+  method: SettlementMethod | null;
+  reference: string | null;
+  note: string | null;
+  createdBy: number;
+  createdAt: string;
+  /** Live payment-row expense ids, in id order. */
+  rows: number[];
 }
 
 export type ActivityType =
@@ -54,6 +83,7 @@ export type ActivityType =
   | 'expense_updated'
   | 'expense_deleted'
   | 'payment_added'
+  | 'payment_undone'
   | 'group_created'
   | 'group_renamed'
   | 'member_joined'
@@ -94,6 +124,7 @@ export interface SyncData {
   friendIds: number[];
   groups: Group[];
   expenses: Expense[];
+  settlementBatches: SettlementBatch[];
   activity: ActivityItem[];
   friendRequests: FriendRequests;
   /** Server capabilities the client may surface. */
@@ -150,6 +181,22 @@ export const toExpense = (r: ExpenseRow, shares: ShareRow[]): Expense => ({
   createdBy: r.created_by,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
+  settlementBatchId: r.settlement_batch_id ?? null,
+});
+
+export const toSettlementBatch = (r: SettlementBatchRow, rows: number[]): SettlementBatch => ({
+  id: r.id,
+  payerId: r.payer_id,
+  payeeId: r.payee_id,
+  amountCents: r.amount_cents,
+  currency: r.currency,
+  date: r.date,
+  method: (r.method as SettlementMethod | null) ?? null,
+  reference: r.reference,
+  note: r.note,
+  createdBy: r.created_by,
+  createdAt: r.created_at,
+  rows,
 });
 
 export const toActivity = (r: ActivityRow): ActivityItem => ({

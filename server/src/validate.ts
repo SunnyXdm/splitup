@@ -13,6 +13,19 @@ export const CATEGORIES = [
   'health',
 ] as const;
 
+/** How a settle-up's cash moved; optional detail on the batch. */
+export const SETTLEMENT_METHODS = ['cash', 'upi', 'bank', 'other'] as const;
+
+/** Trimmed optional text; blank → undefined so the column stores NULL. */
+const optionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .nullable()
+    .optional()
+    .transform((v) => (v ? v : undefined));
+
 export const MAX_CENTS = 100_000_000;
 const currency = z.string().regex(/^[A-Z]{3}$/);
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -140,6 +153,9 @@ export const settlementsBody = z
     watermark: z.string().max(40).optional(),
     watermarkCount: z.number().int().min(0).optional(),
     rows: z.array(settleRow).min(1).max(64),
+    method: z.enum(SETTLEMENT_METHODS).nullable().optional(),
+    reference: optionalText(100),
+    note: optionalText(500),
   })
   .superRefine((b, ctx) => {
     if ((b.watermark === undefined) !== (b.watermarkCount === undefined)) {

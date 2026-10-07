@@ -1,20 +1,68 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { requireAuth, type AppEnv } from '../auth';
-import { db, nowIso } from '../db';
-import { settlementsBody } from '../validate';
-import { readJson, type Expense } from '../lib/wire';
-import { notifySettlement } from '../lib/notify-events';
+import { db, nowIso, type ExpenseRow, type SettlementBatchRow } from '../db';
+import { idParam, settlementsBody } from '../validate';
+import {
+  readJson,
+  toSettlementBatch,
+  type Expense,
+  type SettlementBatch,
+} from '../lib/wire';
+import { notifySettlement, notifySettlementUndone } from '../lib/notify-events';
 import {
   areFriends,
+  assertDepartedUnchanged,
   expenseWire,
+  formatPaymentAmount,
   groupNet,
   insertShares,
   isMember,
   memberGroupOr404,
   paymentSummary,
   recordActivity,
+  shareLike,
+  sharesOf,
+  userName,
 } from '../lib/expense';
+
+const NOT_FOUND = () => new HTTPException(404, { message: 'not found' });
+
+/** Live payment rows of a batch, in id order. */
+function batchRows(batchId: number): ExpenseRow[] {
+  return db
+    .prepare<[number], ExpenseRow>(
+      'SELECT * FROM expenses WHERE settlement_batch_id = ? AND deleted_at IS NULL ORDER BY id',
+    )
+    .all(batchId);
+}
+
+export function settlementBatchWire(batchId: number): SettlementBatch | null {
+  const row = db
+    .prepare<[number], SettlementBatchRow>('SELECT * FROM settlement_batches WHERE id = ?')
+    .get(batchId);
+  if (!row) return null;
+  return toSettlementBatch(
+    row,
+    batchRows(batchId).map((r) => r.id),
+  );
+}
+
+/**
+ * The cash that actually changed hands for a set of rows between `a` and `b`:
+ * row directions net out (counter rows offset), leaving one payer → payee.
+ */
+export function netCash(
+  rows: { payerId: number; recipientId: number; amountCents: number }[],
+  a: number,
+  b: number,
+): { payerId: number; payeeId: number; amountCents: number } {
+  let aToB = 0;
+  for (const r of rows) aToB += r.payerId === a ? r.amountCents : -r.amountCents;
+  return aToB >= 0
+    ? { payerId: a, payeeId: b, amountCents: aToB }
+    : { payerId: b, payeeId: a, amountCents: -aToB };
+}
 
 const app = new Hono<AppEnv>();
 app.use(requireAuth);
@@ -54,7 +102,17 @@ app.post('/', async (c) => {
            AND (client_key = ? OR substr(client_key, 1, ?) = ?) ORDER BY id`,
       )
       .all(me.id, body.clientKey, body.clientKey.length + 1, `${body.clientKey}:`);
-    if (prior.length > 0) return c.json({ expenses: prior.map((r) => expenseWire(r.id)) });
+    if (prior.length > 0) {
+      const batchId = db
+        .prepare<[number], { settlement_batch_id: number | null }>(
+          'SELECT settlement_batch_id FROM expenses WHERE id = ?',
+        )
+        .get(prior[0].id)?.settlement_batch_id;
+      return c.json({
+        expenses: prior.map((r) => expenseWire(r.id)),
+        batch: batchId == null ? null : settlementBatchWire(batchId),
+      });
+    }
   }
 
   if (body.counterpartyId === me.id) {
@@ -64,6 +122,10 @@ app.post('/', async (c) => {
     throw new HTTPException(400, { message: 'you can only settle with a friend' });
   }
   const pair = new Set([me.id, body.counterpartyId]);
+  const cash = netCash(body.rows, me.id, body.counterpartyId);
+  if (cash.amountCents === 0) {
+    throw new HTTPException(400, { message: 'payment rows cancel out' });
+  }
   // Running group net of a departed counterparty, per group, as rows apply.
   const departedNet = new Map<number, number>();
   for (const row of body.rows) {
@@ -138,7 +200,27 @@ app.post('/', async (c) => {
   }
 
   const now = nowIso();
-  const expenses = db.transaction(() => {
+  const { expenses, batchId } = db.transaction(() => {
+    const batchId = Number(
+      db
+        .prepare(
+          `INSERT INTO settlement_batches (created_by, payer_id, payee_id, amount_cents, currency,
+             date, method, reference, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          me.id,
+          cash.payerId,
+          cash.payeeId,
+          cash.amountCents,
+          body.currency,
+          body.date,
+          body.method ?? null,
+          body.reference ?? null,
+          body.note ?? null,
+          now,
+        ).lastInsertRowid,
+    );
     const created: Expense[] = [];
     for (const [i, row] of body.rows.entries()) {
       const shares = [
@@ -148,8 +230,8 @@ app.post('/', async (c) => {
       const info = db
         .prepare(
           `INSERT INTO expenses (group_id, description, amount_cents, currency, date, category, notes,
-             is_payment, created_by, created_at, updated_at, client_key)
-           VALUES (?, 'Payment', ?, ?, ?, 'general', NULL, 1, ?, ?, ?, ?)`,
+             is_payment, created_by, created_at, updated_at, client_key, settlement_batch_id)
+           VALUES (?, 'Payment', ?, ?, ?, 'general', NULL, 1, ?, ?, ?, ?, ?)`,
         )
         .run(
           row.groupId,
@@ -160,6 +242,7 @@ app.post('/', async (c) => {
           now,
           now,
           body.clientKey === undefined ? null : i === 0 ? body.clientKey : `${body.clientKey}:${i}`,
+          batchId,
         );
       const id = Number(info.lastInsertRowid);
       insertShares(id, shares);
@@ -172,11 +255,91 @@ app.post('/', async (c) => {
       );
       created.push(expenseWire(id));
     }
-    return created;
+    return { expenses: created, batchId };
   })();
 
   notifySettlement(me, body.counterpartyId, body.rows, body.currency);
-  return c.json({ expenses });
+  return c.json({ expenses, batch: settlementBatchWire(batchId) });
+});
+
+/**
+ * Undo a whole settle-up: every live row of the batch and the batch itself
+ * are soft-deleted together, or nothing is. Only the two people the cash
+ * moved between (or its creator) may undo; anyone else gets a 404.
+ */
+app.delete('/:batchId', (c) => {
+  const me = c.get('user');
+  const batchId = idParam.parse(c.req.param('batchId'));
+  const batch = db
+    .prepare<[number], SettlementBatchRow>(
+      'SELECT * FROM settlement_batches WHERE id = ? AND deleted_at IS NULL',
+    )
+    .get(batchId);
+  if (!batch || ![batch.payer_id, batch.payee_id, batch.created_by].includes(me.id)) {
+    throw NOT_FOUND();
+  }
+
+  const rows = batchRows(batchId);
+  const groupIds = new Set<number>();
+  for (const row of rows) {
+    if (row.group_id === null) continue;
+    groupIds.add(row.group_id);
+    const group = db
+      .prepare<[number], { deleted_at: string | null }>('SELECT deleted_at FROM groups WHERE id = ?')
+      .get(row.group_id);
+    // A deleted group's ledger is frozen — undoing would rewrite it.
+    if (!group || group.deleted_at !== null) {
+      throw new HTTPException(409, { message: 'group deleted' });
+    }
+    // Nobody may move a departed member's group net (they can't see it).
+    assertDepartedUnchanged(
+      row.group_id,
+      { currency: row.currency, shares: sharesOf(row.id).map(shareLike) },
+      null,
+    );
+  }
+
+  const now = nowIso();
+  const counterpart = batch.payer_id === me.id ? batch.payee_id : batch.payer_id;
+  db.transaction(() => {
+    const { changes } = db
+      .prepare('UPDATE settlement_batches SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL')
+      .run(now, batchId);
+    if (changes === 0) throw NOT_FOUND();
+    const del = db.prepare(
+      'UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
+    );
+    for (const row of rows) del.run(now, now, row.id);
+    const amount = formatPaymentAmount(batch.amount_cents, batch.currency);
+    // A settle recorded entirely inside one group stays in that group's feed;
+    // anything else is tied to a row both people hold a share in, so both see it.
+    const soleGroup =
+      groupIds.size === 1 && rows.every((r) => r.group_id !== null) ? [...groupIds][0] : null;
+    const groupName =
+      soleGroup === null
+        ? null
+        : (db
+            .prepare<[number], { name: string }>('SELECT name FROM groups WHERE id = ?')
+            .get(soleGroup)?.name ?? null);
+    const verb = batch.payer_id === me.id ? 'to' : 'from';
+    recordActivity(
+      me.id,
+      'payment_undone',
+      soleGroup,
+      rows[0]?.id ?? null,
+      `${me.name} undid a payment of ${amount} ${verb} ${userName(counterpart)}${
+        groupName ? ` in ${groupName}` : ''
+      }`,
+    );
+  })();
+
+  notifySettlementUndone(me, {
+    payerId: batch.payer_id,
+    payeeId: batch.payee_id,
+    amountCents: batch.amount_cents,
+    currency: batch.currency,
+  });
+  return c.body(null, 204);
 });
 
 export default app;

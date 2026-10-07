@@ -178,6 +178,7 @@ export default function FriendDetail() {
             sync={sync}
             expenses={shared}
             showGroupTag
+            collapseBatches
             onSelect={(e) => {
               setEditingExpense(e);
               setExpenseOpen(true);

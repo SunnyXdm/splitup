@@ -1,15 +1,23 @@
 import { useMemo, useRef, useState } from 'react';
+import { Plus } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { Button } from '@/components/ui/button';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
-import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/components/ui/input-group';
+import { Input } from '@/components/ui/input';
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+  InputGroupText,
+} from '@/components/ui/input-group';
 import { PickerSelect } from '@/components/ui/picker-select';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
+import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { errorMessage, isStale } from '@/lib/api';
 import { friendBalance } from '@/lib/balances';
@@ -28,7 +36,8 @@ import {
   pairConstituents,
   settlementWatermark,
 } from '@/lib/settle';
-import type { ExpenseInput, SyncData, User } from '@/lib/types';
+import { SETTLEMENT_METHODS } from '@/lib/settlement-batches';
+import type { ExpenseInput, SettlementMethod, SyncData, User } from '@/lib/types';
 import { centsToInput, currencySymbol, todayISO } from './money-input';
 
 export type SettleDirection = 'i_paid' | 'they_paid';
@@ -111,6 +120,11 @@ function SettleBody({
   // refreshed when a stale 409 brings new balances.
   const [suggestion, setSuggestion] = useState<number | undefined>(suggestedCents);
   const [attempted, setAttempted] = useState(false);
+  // Optional receipt details, tucked behind "Add details".
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [method, setMethod] = useState<SettlementMethod | null>(null);
+  const [reference, setReference] = useState('');
+  const [note, setNote] = useState('');
 
   // Friend mode can hold balances in several currencies; each is settled in
   // its own run of the sheet, so offer a switcher when more than one exists.
@@ -126,15 +140,19 @@ function SettleBody({
     if (chosenCounterpartyId !== null) pool.add(chosenCounterpartyId);
     return [...pool].map(
       (id) =>
-        sync.users.find((u) => u.id === id) ?? { id, name: 'Someone', email: null, picture: null },
+        sync.users.find((u) => u.id === id) ?? {
+          id,
+          name: 'Someone',
+          email: null,
+          picture: null,
+        },
     );
   }, [sync, groupId, chosenCounterpartyId]);
 
   // Auto-select only an unambiguous counterparty; guessing (e.g. the first
   // member by join order) invites recording a payment against the wrong
   // person — the user must choose explicitly.
-  const counterpartyId =
-    chosenCounterpartyId ?? (options.length === 1 ? options[0].id : null);
+  const counterpartyId = chosenCounterpartyId ?? (options.length === 1 ? options[0].id : null);
 
   const balanceEntries = useMemo(
     () =>
@@ -188,6 +206,16 @@ function SettleBody({
   }
 
   const me = sync.me;
+  const settleGroup = groupId !== null ? sync.groups.find((g) => g.id === groupId) : undefined;
+  // Everything except a legacy off-currency group edge goes through the
+  // settlements endpoint, which is what stores receipt details.
+  const usesSettlements =
+    groupId === null || (settleGroup !== undefined && currency === settleGroup.currency);
+  const details = {
+    ...(method !== null ? { method } : {}),
+    ...(reference.trim() ? { reference: reference.trim() } : {}),
+    ...(note.trim() ? { note: note.trim() } : {}),
+  };
   const counterparty = options.find((u) => u.id === counterpartyId) ?? null;
   const amountError = amountCents === null ? 'Enter a valid amount.' : null;
   const counterpartyError = counterparty === null ? 'Choose who you settled with.' : null;
@@ -253,6 +281,7 @@ function SettleBody({
         date: todayISO(),
         ...settlementWatermark(sync, counterparty.id),
         rows,
+        ...details,
       };
       settleUp.mutate({ ...body, clientKey: keyFor(body) }, callbacks);
       return;
@@ -260,9 +289,7 @@ function SettleBody({
 
     const payerId = direction === 'i_paid' ? me.id : counterparty.id;
     const recipientId = direction === 'i_paid' ? counterparty.id : me.id;
-    const group = sync.groups.find((g) => g.id === groupId);
-
-    if (group && currency === group.currency) {
+    if (usesSettlements) {
       // In-group settle goes through the settlements endpoint too: the
       // watermark makes a concurrent, stale settle fail with 409 instead of
       // landing on top of the other one and reversing the debt.
@@ -272,6 +299,7 @@ function SettleBody({
         date: todayISO(),
         ...settlementWatermark(sync, counterparty.id),
         rows: [{ groupId, payerId, recipientId, amountCents }],
+        ...details,
       };
       settleUp.mutate({ ...body, clientKey: keyFor(body) }, callbacks);
       return;
@@ -330,9 +358,7 @@ function SettleBody({
           </Field>
 
           <Field data-invalid={attempted && counterpartyError !== null}>
-            <FieldLabel htmlFor="settle-with">
-              {direction === 'i_paid' ? 'To' : 'From'}
-            </FieldLabel>
+            <FieldLabel htmlFor="settle-with">{direction === 'i_paid' ? 'To' : 'From'}</FieldLabel>
             <PickerSelect
               id="settle-with"
               title="Settle with"
@@ -418,7 +444,9 @@ function SettleBody({
                     r.groupId !== null ? sync.groups.find((g) => g.id === r.groupId) : null;
                   const scopeLabel = group ? `${group.emoji} ${group.name}` : 'Direct';
                   const dirLabel =
-                    r.payerId === me.id ? `You → ${counterparty.name}` : `${counterparty.name} → You`;
+                    r.payerId === me.id
+                      ? `You → ${counterparty.name}`
+                      : `${counterparty.name} → You`;
                   return (
                     <div
                       key={i}
@@ -447,6 +475,64 @@ function SettleBody({
                 </FieldDescription>
               ) : null}
             </Field>
+          ) : null}
+
+          {usesSettlements && !detailsOpen ? (
+            <Button
+              variant="ghost"
+              className="h-10 self-start rounded-full px-3 text-muted-foreground"
+              onClick={() => setDetailsOpen(true)}
+            >
+              <Plus data-icon="inline-start" aria-hidden="true" />
+              Add details
+            </Button>
+          ) : null}
+          {usesSettlements && detailsOpen ? (
+            <>
+              <Field>
+                <FieldLabel id="settle-method-label">Method</FieldLabel>
+                <ToggleGroup
+                  value={method ? [method] : []}
+                  onValueChange={(v) => setMethod((v[0] as SettlementMethod | undefined) ?? null)}
+                  className="flex w-full flex-wrap gap-2"
+                  aria-labelledby="settle-method-label"
+                >
+                  {SETTLEMENT_METHODS.map((m) => (
+                    <ToggleGroupItem
+                      key={m.value}
+                      value={m.value}
+                      variant="outline"
+                      className="h-9 rounded-full px-4 aria-pressed:border-primary"
+                    >
+                      {m.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="settle-reference">Reference</FieldLabel>
+                <Input
+                  id="settle-reference"
+                  value={reference}
+                  onChange={(e) => setReference(e.target.value)}
+                  maxLength={100}
+                  autoComplete="off"
+                  placeholder="e.g. UPI transaction ID"
+                  className="h-11 rounded-full px-4"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="settle-note">Note</FieldLabel>
+                <Textarea
+                  id="settle-note"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  maxLength={500}
+                  placeholder="Anything worth remembering"
+                  className="rounded-[20px] px-4"
+                />
+              </Field>
+            </>
           ) : null}
         </FieldGroup>
       </div>
