@@ -9,6 +9,7 @@ import { del } from 'idb-keyval';
 import { api } from './api';
 import { broadcastSignOut, clearSignedOut, markSignedOut } from './auth-session';
 import { netCash } from './settlement-batches';
+import { clearAllDrafts, clearOtherUsersDrafts } from './draft-store';
 import {
   tempExpenseId,
   withBatch,
@@ -86,7 +87,11 @@ export function useExchangeSession() {
       // A different account than the cached dataset's owner: never let the
       // previous user's data render (or persist) under the new session.
       const cached = qc.getQueryData<SyncData>(SYNC_KEY);
-      if (cached && cached.me.id !== me.id) await discardCachedData(qc);
+      if (cached && cached.me.id !== me.id) {
+        await discardCachedData(qc);
+        // Drafts are per account; another account's never stay on this device.
+        await clearOtherUsersDrafts(me.id);
+      }
       await qc.invalidateQueries();
     },
   });
@@ -112,6 +117,8 @@ export function useSignOut() {
       qc.clear();
       clearPendingInvite();
       await del(PERSIST_KEY);
+      // Unsent drafts are account data too: they go with the account.
+      await clearAllDrafts();
       broadcastSignOut();
     },
     onError: () => clearSignedOut(),
