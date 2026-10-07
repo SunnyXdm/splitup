@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { BellRing, CircleHelp, Plus, ReceiptText, UserRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -19,7 +19,7 @@ import SettleUpSheet from '@/components/expense/SettleUpSheet';
 import ExplainBalanceSheet from '@/components/common/ExplainBalanceSheet';
 import { formatMoney } from '@/lib/money';
 import { reminderText, sendReminder } from '@/lib/remind';
-import ExpenseHistory from '@/components/group/ExpenseHistory';
+import FilteredHistory from '@/components/search/FilteredHistory';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { friendBalance } from '@/lib/balances';
 import { useSyncData } from '@/lib/queries';
@@ -37,6 +37,19 @@ export default function FriendDetail() {
   const [settleOpen, setSettleOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
   const [explainCurrency, setExplainCurrency] = useState<string | null>(null);
+
+  // Stable per snapshot, so the filtered history below memoizes properly.
+  const shared = useMemo(
+    () =>
+      sync
+        ? sync.expenses.filter(
+            (e) =>
+              e.shares.some((s) => s.userId === sync.me.id) &&
+              e.shares.some((s) => s.userId === friendId),
+          )
+        : [],
+    [sync, friendId],
+  );
 
   if (!sync) return <FriendDetailSkeleton />;
 
@@ -67,11 +80,6 @@ export default function FriendDetail() {
 
   const entries = friendBalance(sync, friend.id).filter((b) => b.netCents !== 0);
   const primary = entries[0];
-  const shared = sync.expenses.filter(
-    (e) =>
-      e.shares.some((s) => s.userId === sync.me.id) &&
-      e.shares.some((s) => s.userId === friend.id),
-  );
 
   return (
     <div className="flex flex-col gap-6 pb-6">
@@ -163,30 +171,32 @@ export default function FriendDetail() {
 
       <section className="flex flex-col gap-3">
         <span className="eyebrow">History</span>
-        {shared.length === 0 ? (
-          <Empty className="rounded-[28px] bg-card py-12">
-            <EmptyHeader>
-              <EmptyMedia variant="icon" className="rounded-full">
-                <ReceiptText />
-              </EmptyMedia>
-              <EmptyTitle>No shared expenses yet</EmptyTitle>
-              <EmptyDescription>
-                Expenses you share with {friend.name} — in groups or directly — will show up here.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <ExpenseHistory
-            sync={sync}
-            expenses={shared}
-            showGroupTag
-            collapseBatches
-            onSelect={(e) => {
-              setEditingExpense(e);
-              setExpenseOpen(true);
-            }}
-          />
-        )}
+        <FilteredHistory
+          sync={sync}
+          expenses={shared}
+          people={[friend]}
+          showGroupTag
+          collapseBatches
+          placeholder={`Search expenses with ${friend.name}`}
+          onSelect={(e) => {
+            setEditingExpense(e);
+            setExpenseOpen(true);
+          }}
+          empty={
+            <Empty className="rounded-[28px] bg-card py-12">
+              <EmptyHeader>
+                <EmptyMedia variant="icon" className="rounded-full">
+                  <ReceiptText />
+                </EmptyMedia>
+                <EmptyTitle>No shared expenses yet</EmptyTitle>
+                <EmptyDescription>
+                  Expenses you share with {friend.name} — in groups or directly — will show up
+                  here.
+                </EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          }
+        />
       </section>
 
       {/* editingExpense is kept after close (clearing it flipped the sheet to

@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
-import { ArrowUpRight, Plus, UsersRound } from 'lucide-react';
+import { ArrowUpRight, ChartPie, ChevronRight, Plus, UsersRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -33,6 +33,8 @@ import {
   type GrossBalance,
 } from '@/lib/balances';
 import { formatMoney } from '@/lib/money';
+import { resolveDateRange } from '@/lib/search';
+import { personalSummary } from '@/lib/summary';
 import { errorMessage } from '@/lib/api';
 import { useCreateGroup, useSyncData } from '@/lib/queries';
 import type { SyncData } from '@/lib/types';
@@ -50,6 +52,7 @@ export default function Home() {
     <div className="flex flex-col gap-8 pb-6">
       <BalanceHero totals={totals} gross={gross} />
       <DraftsChip scope={{ kind: 'all' }} className="self-start" />
+      {sync.expenses.length > 0 ? <InsightsCard sync={sync} /> : null}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <span className="eyebrow">Groups</span>
@@ -166,6 +169,42 @@ function BalanceHero({ totals, gross }: { totals: CurrencyAmount[]; gross: Gross
 function MoneyTicker({ cents, currency }: { cents: number; currency: string }) {
   const format = useCallback((v: number) => formatMoney(Math.round(v), currency), [currency]);
   return <NumberTicker value={cents} format={format} />;
+}
+
+/** This month's spending (my share), linking to the full Insights screen. */
+function InsightsCard({ sync }: { sync: SyncData }) {
+  const now = new Date();
+  const spent = personalSummary(sync, resolveDateRange('this-month', now)).filter(
+    (s) => s.expenseCount > 0,
+  );
+  return (
+    <section className="flex flex-col gap-3">
+      <span className="eyebrow">Insights</span>
+      <Link
+        to="/insights"
+        className="flex min-h-20 items-center gap-4 rounded-[28px] bg-card p-4 transition-colors hover:bg-secondary"
+      >
+        <span className="flex size-12 shrink-0 items-center justify-center rounded-full bg-background">
+          <ChartPie className="size-5 text-foreground/70" aria-hidden="true" />
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="text-sm text-muted-foreground">
+            Your share in {now.toLocaleString(undefined, { month: 'long' })}
+          </span>
+          {spent.length === 0 ? (
+            <span className="font-medium">Nothing spent yet</span>
+          ) : (
+            <span className="flex flex-wrap gap-x-3 text-lg font-medium tracking-tight tabular-nums">
+              {spent.map((s) => (
+                <span key={s.currency}>{formatMoney(s.myShareCents, s.currency)}</span>
+              ))}
+            </span>
+          )}
+        </span>
+        <ChevronRight className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </Link>
+    </section>
+  );
 }
 
 function GroupList({ sync }: { sync: SyncData }) {

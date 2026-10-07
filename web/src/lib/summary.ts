@@ -1,0 +1,169 @@
+import { groupExpenses } from './balances';
+import { inDayRange, type DayRange } from './search';
+import type { Category, Expense, SyncData } from './types';
+
+/**
+ * Spending summaries ("what did this trip cost me?"). Spending is CONSUMPTION:
+ * my share is Σ my owedCents on real expenses — not my net balance, which
+ * also moves with who paid. Payments (settle-ups) are never spending; they're
+ * reported separately as sent/received. Currencies are never summed together.
+ */
+
+export interface CategoryTotal {
+  category: Category;
+  /** My share in this category. */
+  cents: number;
+}
+
+export interface CurrencySummary {
+  currency: string;
+  /** Σ amount of non-payment expenses in scope. */
+  totalCents: number;
+  expenseCount: number;
+  /** Σ my owedCents on non-payment expenses — what it cost me. */
+  myShareCents: number;
+  /** Σ my paidCents on non-payment expenses. */
+  myPaidCents: number;
+  /** Settle-up payments I made / received. */
+  paymentsSentCents: number;
+  paymentsReceivedCents: number;
+  /** My share by category, largest first; zero categories omitted. */
+  categories: CategoryTotal[];
+  /** The 5 biggest expenses by amount (ties: newest first). */
+  top: Expense[];
+}
+
+export const TOP_N = 5;
+
+function compareTop(a: Expense, b: Expense): number {
+  return (
+    b.amountCents - a.amountCents ||
+    String(b.date ?? '').localeCompare(String(a.date ?? '')) ||
+    b.id - a.id
+  );
+}
+
+/** Insert into a sorted top-N list — O(N) per item, so O(n) overall. */
+function pushTop(top: Expense[], e: Expense) {
+  if (top.length === TOP_N && compareTop(e, top[TOP_N - 1]) >= 0) return;
+  let i = top.length;
+  while (i > 0 && compareTop(e, top[i - 1]) < 0) i -= 1;
+  top.splice(i, 0, e);
+  if (top.length > TOP_N) top.pop();
+}
+
+interface Acc extends Omit<CurrencySummary, 'categories'> {
+  byCategory: Map<Category, number>;
+}
+
+/**
+ * Aggregate `expenses` from `meId`'s point of view, per currency (sorted by
+ * code). Rows outside `range` are skipped. A currency appears only if it has
+ * at least one expense or payment in scope.
+ */
+export function summarize(
+  expenses: Expense[],
+  meId: number,
+  range: DayRange = { from: null, to: null },
+): CurrencySummary[] {
+  const byCurrency = new Map<string, Acc>();
+  for (const e of expenses) {
+    if (!inDayRange(String(e.date ?? ''), range)) continue;
+    let acc = byCurrency.get(e.currency);
+    if (!acc) {
+      acc = {
+        currency: e.currency,
+        totalCents: 0,
+        expenseCount: 0,
+        myShareCents: 0,
+        myPaidCents: 0,
+        paymentsSentCents: 0,
+        paymentsReceivedCents: 0,
+        byCategory: new Map(),
+        top: [],
+      };
+      byCurrency.set(e.currency, acc);
+    }
+    const mine = e.shares?.find((s) => s.userId === meId);
+    if (e.isPayment) {
+      if (mine) {
+        acc.paymentsSentCents += mine.paidCents;
+        acc.paymentsReceivedCents += mine.owedCents;
+      }
+      continue;
+    }
+    acc.totalCents += e.amountCents;
+    acc.expenseCount += 1;
+    pushTop(acc.top, e);
+    if (mine) {
+      acc.myShareCents += mine.owedCents;
+      acc.myPaidCents += mine.paidCents;
+      if (mine.owedCents !== 0) {
+        acc.byCategory.set(e.category, (acc.byCategory.get(e.category) ?? 0) + mine.owedCents);
+      }
+    }
+  }
+  return [...byCurrency.values()]
+    .sort((a, b) => (a.currency < b.currency ? -1 : a.currency > b.currency ? 1 : 0))
+    .map(({ byCategory, ...rest }) => ({
+      ...rest,
+      categories: [...byCategory.entries()]
+        .filter(([, cents]) => cents !== 0)
+        .map(([category, cents]) => ({ category, cents }))
+        .sort((a, b) => b.cents - a.cents || a.category.localeCompare(b.category)),
+    }));
+}
+
+// ---------------------------------------------------------------- memoization
+
+const cache = new WeakMap<SyncData, Map<string, CurrencySummary[]>>();
+
+function memo(sync: SyncData, key: string, compute: () => CurrencySummary[]) {
+  let perSync = cache.get(sync);
+  if (!perSync) {
+    perSync = new Map();
+    cache.set(sync, perSync);
+  }
+  let hit = perSync.get(key);
+  if (!hit) {
+    hit = compute();
+    perSync.set(key, hit);
+  }
+  return hit;
+}
+
+/** One group's summary for a day range, memoized per sync snapshot. */
+export function groupSummary(sync: SyncData, groupId: number, range: DayRange): CurrencySummary[] {
+  return memo(sync, `g:${groupId}:${range.from ?? ''}:${range.to ?? ''}`, () =>
+    summarize(groupExpenses(sync, groupId), sync.me.id, range),
+  );
+}
+
+/** Expenses I'm part of (any share), across groups and 1:1 — per snapshot. */
+const involvedCache = new WeakMap<SyncData, Expense[]>();
+export function myExpenses(sync: SyncData): Expense[] {
+  let list = involvedCache.get(sync);
+  if (!list) {
+    const me = sync.me.id;
+    list = sync.expenses.filter((e) => e.shares?.some((s) => s.userId === me));
+    involvedCache.set(sync, list);
+  }
+  return list;
+}
+
+/** Everything I'm part of within a day range, memoized per snapshot. */
+export function personalSummary(sync: SyncData, range: DayRange): CurrencySummary[] {
+  return memo(sync, `me:${range.from ?? ''}:${range.to ?? ''}`, () =>
+    summarize(myExpenses(sync), sync.me.id, range),
+  );
+}
+
+/** Earliest YYYY-MM of anything I'm part of (for the month stepper), or null. */
+export function firstMonth(sync: SyncData): string | null {
+  let min: string | null = null;
+  for (const e of myExpenses(sync)) {
+    const d = String(e.date ?? '');
+    if (/^\d{4}-\d{2}/.test(d) && (min === null || d < min)) min = d;
+  }
+  return min ? min.slice(0, 7) : null;
+}

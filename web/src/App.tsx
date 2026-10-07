@@ -11,6 +11,8 @@ import FriendDetail from './screens/FriendDetail';
 import Friends from './screens/Friends';
 import GroupDetail from './screens/GroupDetail';
 import Home from './screens/Home';
+import Insights from './screens/Insights';
+import Search from './screens/Search';
 import FriendInvite from './screens/FriendInvite';
 import Join from './screens/Join';
 import NotFound from './screens/NotFound';
@@ -56,6 +58,8 @@ export default function App() {
           <Route path="/friends" element={<Friends />} />
           <Route path="/friends/:id" element={<FriendDetail />} />
           <Route path="/activity" element={<Activity />} />
+          <Route path="/search" element={<Search />} />
+          <Route path="/insights" element={<Insights />} />
           <Route path="/account" element={<Account />} />
           <Route path="/join/:token" element={<Join />} />
           <Route path="/friend/:token" element={<FriendInvite />} />
