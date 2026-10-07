@@ -6,6 +6,7 @@ import {
   expensePayload,
   friendAcceptedPayload,
   friendRequestPayload,
+  recurringDuePayload,
   settlementPayload,
   settlementUndonePayload,
   type PayloadShare,
@@ -134,6 +135,12 @@ export function notifyFriendRequest(actor: Actor, toEmail: string): void {
 export function notifyFriendAccepted(actor: Actor, friendId: number, via: 'request' | 'invite'): void {
   if (friendId === actor.id) return;
   notifyUsers([friendId], friendAcceptedPayload({ id: actor.id, name: actor.name }, via));
+}
+
+/** Recurring bills of this user became due (callers limit it to once a day). */
+export function notifyRecurringDue(userId: number, descriptions: string[]): void {
+  if (descriptions.length === 0) return;
+  notifyUsers([userId], recurringDuePayload(descriptions));
 }
 
 export function notifyAddedToGroup(

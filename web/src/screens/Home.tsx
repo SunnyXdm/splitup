@@ -21,6 +21,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { DraftsChip } from '@/components/expense/DraftsSheet';
 import { GROUP_EMOJI } from '@/components/group/group-emoji';
+import { DueToAddCard } from '@/components/recurring/DueToAdd';
 import GroupFormFields, { type GroupFormValues } from '@/components/group/GroupFormFields';
 import { MyGroupBalance } from '@/components/group/MyGroupBalance';
 import { useOnline } from '@/components/layout/OfflineBanner';
@@ -55,6 +56,7 @@ export default function Home() {
     <div className="flex flex-col gap-8 pb-6">
       <BalanceHero totals={totals} gross={gross} />
       <DraftsChip scope={{ kind: 'all' }} className="self-start" />
+      <DueToAddCard sync={sync} />
       {sync.expenses.length > 0 ? <InsightsCard sync={sync} /> : null}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">

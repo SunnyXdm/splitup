@@ -131,6 +131,7 @@ export const expensePatchBody = expenseFields
   .superRefine(refineExpense);
 
 export type ExpenseBody = z.infer<typeof expenseFields>;
+export type ExpenseCreateBody = z.infer<typeof expenseCreateBody>;
 
 /** A stored revision snapshot, re-validated before it may be restored. */
 export const expenseSnapshotSchema = expenseFields.superRefine(refineExpense);
@@ -245,3 +246,108 @@ export const pushSubscriptionBody = z.strictObject({
 export const pushUnsubscribeBody = z.strictObject({
   endpoint: z.string().min(1).max(1000),
 });
+
+// ---------------------------------------------------------------------------
+// Recurring bills
+// ---------------------------------------------------------------------------
+
+const userIdSchema = z.number().int().positive();
+const centsOrZero = z.number().int().min(0).max(MAX_CENTS);
+
+/** Split intent (see lib/recurrence.ts): who pays, who is charged, and how. */
+const splitIntentSchema = z
+  .strictObject({
+    mode: z.enum(['equal', 'exact', 'percent', 'shares']),
+    participants: z.array(userIdSchema).min(1).max(50),
+    values: z
+      .array(z.strictObject({ userId: userIdSchema, value: centsOrZero }))
+      .max(50)
+      .optional(),
+    payers: z
+      .array(z.strictObject({ userId: userIdSchema, cents: centsOrZero }))
+      .min(1)
+      .max(50),
+  })
+  .superRefine((s, ctx) => {
+    if (new Set(s.participants).size !== s.participants.length) {
+      ctx.addIssue({ code: 'custom', message: 'duplicate participant' });
+    }
+    const values = s.values ?? [];
+    if (new Set(values.map((v) => v.userId)).size !== values.length) {
+      ctx.addIssue({ code: 'custom', message: 'duplicate split value' });
+    }
+    if (new Set(s.payers.map((p) => p.userId)).size !== s.payers.length) {
+      ctx.addIssue({ code: 'custom', message: 'duplicate payer' });
+    }
+    if (s.mode !== 'equal') {
+      if (!values.some((v) => v.value > 0)) {
+        ctx.addIssue({ code: 'custom', message: 'split values are required' });
+      }
+      const inSplit = new Set(s.participants);
+      if (values.some((v) => v.value > 0 && !inSplit.has(v.userId))) {
+        ctx.addIssue({ code: 'custom', message: 'split values must name participants' });
+      }
+    }
+    if (s.mode === 'percent' && values.reduce((sum, v) => sum + v.value, 0) !== 10_000) {
+      ctx.addIssue({ code: 'custom', message: 'percentages must add up to 100' });
+    }
+  });
+
+export const recurringTemplateSchema = z.strictObject({
+  description: z.string().trim().min(1).max(200),
+  amountCents: z.number().int().min(1).max(MAX_CENTS),
+  currency,
+  category: z.enum(CATEGORIES),
+  notes: z.string().trim().max(1000).nullable(),
+  split: splitIntentSchema,
+});
+
+export type RecurringTemplate = z.infer<typeof recurringTemplateSchema>;
+
+const cadenceSchema = z.enum(['weekly', 'monthly', 'yearly']);
+const intervalSchema = z.number().int().min(1).max(52);
+
+export const recurringCreateBody = z
+  .strictObject({
+    groupId: z.number().int().positive().nullable(),
+    friendId: z.number().int().positive().nullable(),
+    template: recurringTemplateSchema,
+    cadence: cadenceSchema,
+    interval: intervalSchema.default(1),
+    /** Occurrence #0; monthly/yearly keep its day-of-month (clamped to month end). */
+    anchorDate: isoDate,
+    /**
+     * Also record the anchor occurrence as an expense now (the add-expense
+     * form's "Repeat"): the rule then starts with the next period.
+     */
+    addFirst: z.boolean().default(false),
+    clientKey: clientKeySchema.optional(),
+  })
+  .superRefine((b, ctx) => {
+    if ((b.groupId === null) === (b.friendId === null)) {
+      ctx.addIssue({ code: 'custom', message: 'a recurring bill needs a group or a friend' });
+    }
+  });
+
+export type RecurringCreateBody = z.infer<typeof recurringCreateBody>;
+
+export const recurringPatchBody = z.strictObject({
+  template: recurringTemplateSchema.optional(),
+  cadence: cadenceSchema.optional(),
+  interval: intervalSchema.optional(),
+  anchorDate: isoDate.optional(),
+  paused: z.boolean().optional(),
+});
+
+/**
+ * Add a due occurrence: as its template says (optionally with another amount
+ * or date), or with the full expense fields the user reviewed in the form.
+ */
+export const occurrenceAddBody = z.strictObject({
+  amountCents: z.number().int().min(1).max(MAX_CENTS).optional(),
+  date: isoDate.optional(),
+  expense: expenseFields.omit({ isPayment: true }).optional(),
+});
+
+/** The client's local date, so "due today" follows the user's calendar. */
+export const todayQuery = isoDate;

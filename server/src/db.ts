@@ -265,6 +265,44 @@ export function backfillRevisions(): void {
 }
 backfillRevisions();
 
+// Recurring bills: a rule holds the bill's template (split stored as intent,
+// see lib/recurrence.ts) and schedule; each due date becomes one occurrence
+// row — an inbox item until the creator adds (→ expense) or skips it. The
+// UNIQUE pair makes catch-up generation safe to run any number of times.
+db.exec(`
+CREATE TABLE IF NOT EXISTS recurring_rules (
+  id INTEGER PRIMARY KEY,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  group_id INTEGER REFERENCES groups(id),
+  friend_id INTEGER REFERENCES users(id),
+  template TEXT NOT NULL,
+  cadence TEXT NOT NULL,
+  interval INTEGER NOT NULL DEFAULT 1,
+  anchor_date TEXT NOT NULL,
+  next_due TEXT NOT NULL,
+  paused INTEGER NOT NULL DEFAULT 0,
+  client_key TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_rules_creator ON recurring_rules(created_by);
+CREATE INDEX IF NOT EXISTS idx_recurring_rules_group ON recurring_rules(group_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recurring_rules_client_key
+  ON recurring_rules(created_by, client_key) WHERE client_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS recurring_occurrences (
+  id INTEGER PRIMARY KEY,
+  rule_id INTEGER NOT NULL REFERENCES recurring_rules(id) ON DELETE CASCADE,
+  due_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  expense_id INTEGER REFERENCES expenses(id),
+  created_at TEXT NOT NULL,
+  UNIQUE (rule_id, due_date)
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_occurrences_pending
+  ON recurring_occurrences(rule_id) WHERE status = 'pending';
+`);
+
 export interface UserRow {
   id: number;
   shoo_sub: string;
@@ -337,6 +375,33 @@ export interface ExpenseRevisionRow {
   action: 'created' | 'updated' | 'deleted' | 'restored';
   actor_id: number;
   snapshot: string;
+  created_at: string;
+}
+
+export interface RecurringRuleRow {
+  id: number;
+  created_by: number;
+  group_id: number | null;
+  friend_id: number | null;
+  /** JSON of RecurringTemplate. */
+  template: string;
+  cadence: string;
+  interval: number;
+  anchor_date: string;
+  next_due: string;
+  paused: number;
+  client_key: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface RecurringOccurrenceRow {
+  id: number;
+  rule_id: number;
+  due_date: string;
+  status: 'pending' | 'added' | 'skipped';
+  expense_id: number | null;
   created_at: string;
 }
 

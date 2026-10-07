@@ -12,6 +12,7 @@ import {
   MoveRight,
   PencilLine,
   ReceiptText,
+  Repeat,
   Trash2,
   UserRoundPlus,
   UsersRound,
@@ -296,6 +297,9 @@ export default function GroupDetail() {
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setDeletedOpen(true)} disabled={!online}>
                 <Trash2 aria-hidden="true" /> Recently deleted
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => navigate(`/recurring?group=${group.id}`)}>
+                <Repeat aria-hidden="true" /> Recurring bills
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setLeaveOpen(true)}>

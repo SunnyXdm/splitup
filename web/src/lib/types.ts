@@ -122,6 +122,62 @@ export interface FriendRequests {
   outgoing: OutgoingFriendRequest[];
 }
 
+export type Cadence = 'weekly' | 'monthly' | 'yearly';
+
+/**
+ * How a recurring bill splits, stored as intent so a changed amount re-splits
+ * correctly: equal stays equal, percent/shares keep ratios, exact amounts and
+ * multiple payers scale proportionally.
+ */
+export interface RecurringSplit {
+  mode: 'equal' | 'exact' | 'percent' | 'shares';
+  /** Who the split may charge (equal: exactly who is charged). */
+  participants: number[];
+  /** exact: owed cents · percent: basis points · shares: counts. */
+  values?: { userId: number; value: number }[];
+  payers: { userId: number; cents: number }[];
+}
+
+export interface RecurringTemplate {
+  description: string;
+  amountCents: number;
+  currency: string;
+  category: Category;
+  notes: string | null;
+  split: RecurringSplit;
+}
+
+export interface RecurringRule {
+  id: number;
+  createdBy: number;
+  groupId: number | null;
+  /** The other person of a 1:1 bill. */
+  friendId: number | null;
+  template: RecurringTemplate;
+  cadence: Cadence;
+  interval: number;
+  /** YYYY-MM-DD of the first occurrence; its day-of-month is kept (clamped). */
+  anchorDate: string;
+  /** YYYY-MM-DD of the next occurrence not yet in the inbox. */
+  nextDue: string;
+  paused: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A due occurrence in my "Due to add" inbox (only the rule's creator gets these). */
+export interface PendingOccurrence {
+  id: number;
+  ruleId: number;
+  /** YYYY-MM-DD */
+  dueDate: string;
+  description: string;
+  amountCents: number;
+  currency: string;
+  groupId: number | null;
+  friendId: number | null;
+}
+
 export interface SyncData {
   me: Me;
   users: User[];
@@ -135,6 +191,8 @@ export interface SyncData {
   friendRequests?: FriendRequests;
   /** Optional: absent from older servers and older persisted payloads. */
   features?: { receiptScan?: boolean };
+  /** Optional: absent from older servers and older persisted payloads. */
+  recurring?: { rules: RecurringRule[]; pending: PendingOccurrence[] };
   syncedAt: string;
 }
 

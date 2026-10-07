@@ -6,6 +6,7 @@ import {
   type QueryClient,
 } from '@tanstack/react-query';
 import { del } from 'idb-keyval';
+import { todayISO } from '@/components/expense/money-input';
 import { api } from './api';
 import { withGroupArchived } from './archive';
 import { broadcastSignOut, clearSignedOut, markSignedOut } from './auth-session';
@@ -31,6 +32,7 @@ import { clearPendingInvite } from './pending-invite';
 import { unsubscribeOnSignOut } from './push';
 import type {
   DeletedExpenses,
+  Cadence,
   Expense,
   ExpenseInput,
   ExpenseRevisions,
@@ -38,6 +40,9 @@ import type {
   Group,
   InvitePreview,
   Me,
+  PendingOccurrence,
+  RecurringRule,
+  RecurringTemplate,
   SettlementBatch,
   SettlementMethod,
   SyncData,
@@ -59,7 +64,8 @@ export const EXPENSE_WRITE_KEY = ['expense-write'] as const;
 export function useSyncData() {
   return useQuery({
     queryKey: SYNC_KEY,
-    queryFn: () => api<SyncData>('/api/sync'),
+    // My local date, so recurring bills fall due on my calendar, not the server's.
+    queryFn: () => api<SyncData>(`/api/sync?today=${todayISO()}`),
   });
 }
 
@@ -646,5 +652,157 @@ export function useRestoreExpense() {
         qc.invalidateQueries({ queryKey: [REVISIONS_KEY, vars.id] }),
         qc.invalidateQueries({ queryKey: [DELETED_KEY] }),
       ]),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Recurring bills
+// ---------------------------------------------------------------------------
+
+export interface CreateRecurringVars {
+  groupId: number | null;
+  friendId: number | null;
+  template: RecurringTemplate;
+  cadence: Cadence;
+  interval?: number;
+  /** YYYY-MM-DD of the first occurrence. */
+  anchorDate: string;
+  /** Record the anchor occurrence as an expense right away (the form's "Repeat"). */
+  addFirst?: boolean;
+  /** Idempotency key so a retried POST can't set the bill up twice. */
+  clientKey?: string;
+}
+
+/** Creates a rule (and, with addFirst, its first expense), then re-syncs. */
+export function useCreateRecurring() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: EXPENSE_WRITE_KEY,
+    mutationFn: (body: CreateRecurringVars) =>
+      api<{ rule: RecurringRule; expense: Expense | null }>(`/api/recurring?today=${todayISO()}`, {
+        method: 'POST',
+        body,
+      }),
+    onSettled: () => invalidateIfLastWrite(qc),
+  });
+}
+
+export interface UpdateRecurringVars {
+  id: number;
+  template?: RecurringTemplate;
+  cadence?: Cadence;
+  interval?: number;
+  anchorDate?: string;
+  paused?: boolean;
+}
+
+export function useUpdateRecurring() {
+  return useMutation({
+    mutationFn: ({ id, ...body }: UpdateRecurringVars) =>
+      api<RecurringRule>(`/api/recurring/${id}?today=${todayISO()}`, { method: 'PATCH', body }),
+    ...useSyncInvalidation(),
+  });
+}
+
+export function useDeleteRecurring() {
+  return useMutation({
+    mutationFn: (id: number) => api<void>(`/api/recurring/${id}`, { method: 'DELETE' }),
+    ...useSyncInvalidation(),
+  });
+}
+
+/** Drops one due item from the cached inbox (optimistic add / skip). */
+function withoutPending(sync: SyncData, occurrenceId: number): SyncData {
+  if (!sync.recurring) return sync;
+  const pending = sync.recurring.pending.filter((p) => p.id !== occurrenceId);
+  return { ...sync, recurring: { ...sync.recurring, pending } };
+}
+
+function withPending(sync: SyncData, item: PendingOccurrence): SyncData {
+  if (!sync.recurring || sync.recurring.pending.some((p) => p.id === item.id)) return sync;
+  return { ...sync, recurring: { ...sync.recurring, pending: [...sync.recurring.pending, item] } };
+}
+
+/** A server expense row, added unless the cache already has it. */
+function withExpenseRow(sync: SyncData, expense: Expense): SyncData {
+  if (sync.expenses.some((e) => e.id === expense.id)) return sync;
+  return { ...sync, expenses: [...sync.expenses, expense] };
+}
+
+export interface AddOccurrenceVars {
+  occurrenceId: number;
+  /** The reviewed expense; omitted = exactly as the rule's template says. */
+  expense?: Omit<ExpenseInput, 'isPayment'>;
+}
+
+/**
+ * Records a due item as an expense (idempotent server-side: a retry can't add
+ * it twice). The item leaves the inbox at once; a reviewed add also shows its
+ * expense optimistically, since its fields are already known.
+ */
+export function useAddOccurrence() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: EXPENSE_WRITE_KEY,
+    mutationFn: ({ occurrenceId, expense }: AddOccurrenceVars) =>
+      api<{ expense: Expense; occurrenceId: number }>(
+        `/api/recurring/occurrences/${occurrenceId}/add`,
+        { method: 'POST', body: expense ? { expense } : {} },
+      ),
+    onMutate: async ({ occurrenceId, expense }) => {
+      await qc.cancelQueries({ queryKey: SYNC_KEY });
+      const item = qc
+        .getQueryData<SyncData>(SYNC_KEY)
+        ?.recurring?.pending.find((p) => p.id === occurrenceId);
+      const tempId = expense ? tempExpenseId() : null;
+      patchSync(qc, (sync) => {
+        const next = withoutPending(sync, occurrenceId);
+        return expense && tempId !== null
+          ? withCreatedExpense(next, { ...expense, isPayment: false }, sync.me.id, tempId)
+          : next;
+      });
+      return { item, tempId };
+    },
+    onSuccess: ({ expense }, _vars, ctx) => {
+      patchSync(qc, (sync) =>
+        ctx.tempId !== null
+          ? withResolvedTemp(sync, ctx.tempId, expense)
+          : withExpenseRow(sync, expense),
+      );
+    },
+    onError: (_err, _vars, ctx) => {
+      if (!ctx) return;
+      const { item, tempId } = ctx;
+      patchSync(qc, (sync) => {
+        const next = tempId !== null ? withoutExpenses(sync, [tempId]) : sync;
+        return item ? withPending(next, item) : next;
+      });
+    },
+    onSettled: () => invalidateIfLastWrite(qc),
+  });
+}
+
+export function useSkipOccurrence() {
+  const qc = useQueryClient();
+  return useMutation({
+    // Shares the expense-write key so a burst of adds/skips refetches once.
+    mutationKey: EXPENSE_WRITE_KEY,
+    mutationFn: (occurrenceId: number) =>
+      api<void>(`/api/recurring/occurrences/${occurrenceId}/skip`, { method: 'POST' }),
+    onMutate: async (occurrenceId) => {
+      await qc.cancelQueries({ queryKey: SYNC_KEY });
+      const item = qc
+        .getQueryData<SyncData>(SYNC_KEY)
+        ?.recurring?.pending.find((p) => p.id === occurrenceId);
+      patchSync(qc, (sync) => withoutPending(sync, occurrenceId));
+      return { item };
+    },
+    onError: (_err, _id, ctx) => {
+      if (ctx?.item) {
+        const { item } = ctx;
+        patchSync(qc, (sync) => withPending(sync, item));
+      }
+    },
+    onSettled: () => invalidateIfLastWrite(qc),
   });
 }

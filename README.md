@@ -33,6 +33,7 @@ splitting expenses with friends, built to be safe, precise, and pleasant to use.
 - **Offline-ready** — data is readable offline, installed or in the browser; edits require a connection by design, so there are no stale writes and no conflict surprises.
 - **Themes** — light, dark, and AMOLED, system-following, with a view-transition theme toggle.
 - **Everyday utilities** — activity feed, CSV export, and payment reminders.
+- **Recurring bills** — rent, utilities and subscriptions repeat weekly, monthly or yearly; each due date lands in a "Due to add" inbox on Home to add (after a review) or skip, never posted on its own. Missed dates are caught up after server downtime.
 - **Receipt scanning** (optional) — snap a bill and get a prefilled draft expense; you still check the numbers, pick the split, and save.
 - **Privacy-first authentication** — Google sign-in via [shoo.dev](https://shoo.dev); no passwords stored, no tracking.
 
