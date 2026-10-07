@@ -75,6 +75,26 @@ export interface ActivityItem {
   createdAt: string;
 }
 
+export interface IncomingFriendRequest {
+  id: number;
+  /** Who asked (full profile — they revealed themselves by asking). */
+  user: User;
+  createdAt: string;
+}
+
+export interface OutgoingFriendRequest {
+  id: number;
+  /** Only the email I typed — never reveals whether it has an account. */
+  email: string;
+  createdAt: string;
+}
+
+export interface FriendRequests {
+  incoming: IncomingFriendRequest[];
+  /** Requests I sent that are still pending. */
+  outgoing: OutgoingFriendRequest[];
+}
+
 export interface SyncData {
   me: Me;
   users: User[];
@@ -82,6 +102,8 @@ export interface SyncData {
   groups: Group[];
   expenses: Expense[];
   activity: ActivityItem[];
+  /** Optional: absent from older servers and older persisted payloads. */
+  friendRequests?: FriendRequests;
   syncedAt: string;
 }
 

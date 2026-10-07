@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   friendBalance,
   groupBalances,
+  myGrossBalances,
   myTotalBalance,
   pairwiseForExpense,
   suggestSettlements,
@@ -391,7 +392,7 @@ describe('friendBalance / myTotalBalance', () => {
 });
 
 describe('suggestSettlements', () => {
-  it('matches largest debtor with largest creditor', () => {
+  it('sweeps debtors and creditors in userId order (two-line sweep)', () => {
     const balances: NetBalance[] = [
       { userId: 1, netCents: 700, currency: 'USD' },
       { userId: 2, netCents: 300, currency: 'USD' },
@@ -400,12 +401,12 @@ describe('suggestSettlements', () => {
     ];
     expect(suggestSettlements(balances)).toEqual([
       { fromUserId: 3, toUserId: 1, cents: 600, currency: 'USD' },
-      { fromUserId: 4, toUserId: 2, cents: 300, currency: 'USD' },
       { fromUserId: 4, toUserId: 1, cents: 100, currency: 'USD' },
+      { fromUserId: 4, toUserId: 2, cents: 300, currency: 'USD' },
     ]);
   });
 
-  it('breaks ties by lower userId and skips zero nets', () => {
+  it('orders by userId regardless of input order and skips zero nets', () => {
     const balances: NetBalance[] = [
       { userId: 5, netCents: -100, currency: 'USD' },
       { userId: 2, netCents: -100, currency: 'USD' },
@@ -467,6 +468,68 @@ describe('suggestSettlements', () => {
   });
 });
 
+describe('suggestSettlements stability', () => {
+  /** Applies a payment `from` → `to` of `cents` onto per-currency nets. */
+  const pay = (balances: NetBalance[], t: Transfer, cents: number): NetBalance[] =>
+    balances.map((b) =>
+      b.currency !== t.currency
+        ? b
+        : b.userId === t.fromUserId
+          ? { ...b, netCents: b.netCents + cents }
+          : b.userId === t.toUserId
+            ? { ...b, netCents: b.netCents - cents }
+            : b,
+    );
+
+  /** The old suggestion with `cents` taken off edge index k (dropped at zero). */
+  const minus = (transfers: Transfer[], k: number, cents: number): Transfer[] =>
+    transfers
+      .map((t, i) => (i === k ? { ...t, cents: t.cents - cents } : t))
+      .filter((t) => t.cents > 0);
+
+  it('regression: paying a suggested edge never re-routes ([+10,+9,+8,−12,−11,−4])', () => {
+    const balances: NetBalance[] = [10, 9, 8, -12, -11, -4].map((netCents, i) => ({
+      userId: i + 1,
+      netCents,
+      currency: 'USD',
+    }));
+    const before = suggestSettlements(balances);
+    for (let k = 0; k < before.length; k++) {
+      expect(suggestSettlements(pay(balances, before[k], before[k].cents))).toEqual(
+        minus(before, k, before[k].cents),
+      );
+    }
+  });
+
+  it('new suggestion = old minus the payment, for every edge, full and partial (LCG)', () => {
+    const rand = lcg(2024);
+    for (let iter = 0; iter < 300; iter++) {
+      const balances: NetBalance[] = [];
+      for (const currency of ['USD', 'EUR'].slice(0, 1 + Math.floor(rand() * 2))) {
+        const n = 2 + Math.floor(rand() * 8);
+        let sum = 0;
+        for (let userId = 1; userId < n; userId++) {
+          // Include zeros and repeated magnitudes — the cases greedy trips on.
+          const net = rand() < 0.15 ? 0 : (Math.floor(rand() * 41) - 20) * 50;
+          sum += net;
+          balances.push({ userId: userId * 3, netCents: net, currency });
+        }
+        balances.push({ userId: n * 3, netCents: -sum, currency });
+      }
+      const before = suggestSettlements(balances);
+      for (let k = 0; k < before.length; k++) {
+        const edge = before[k];
+        const partial = 1 + Math.floor(rand() * edge.cents);
+        for (const cents of [edge.cents, partial]) {
+          expect(suggestSettlements(pay(balances, edge, cents))).toEqual(
+            minus(before, k, cents),
+          );
+        }
+      }
+    }
+  });
+});
+
 describe('simplified debts stay consistent after net settlement (Darshna bug)', () => {
   it('paying your whole net to one suggested creditor zeroes every friend balance', () => {
     const mk = (id: number, groupId: number, shares: [number, number, number][]) => ({
@@ -495,5 +558,56 @@ describe('simplified debts stay consistent after net settlement (Darshna bug)', 
     // the residual debt is now between U2 and U3, not through me
     const transfers = suggestSettlements(groupBalances(sync, 7));
     expect(transfers).toEqual([{ fromUserId: 2, toUserId: 3, cents: 1000, currency: 'INR' }]);
+  });
+});
+
+describe('myGrossBalances', () => {
+  it('does not let opposite debts to different people cancel into "settled up"', () => {
+    const sync = makeSync({
+      friendIds: [2, 3],
+      expenses: [
+        // I owe 2 100; 3 owes me 100 (direct expenses)
+        makeExpense({
+          shares: [
+            { userId: 2, paidCents: 100, owedCents: 0 },
+            { userId: 1, paidCents: 0, owedCents: 100 },
+          ],
+        }),
+        makeExpense({
+          shares: [
+            { userId: 1, paidCents: 100, owedCents: 0 },
+            { userId: 3, paidCents: 0, owedCents: 100 },
+          ],
+        }),
+      ],
+    });
+    expect(myTotalBalance(sync)).toEqual([]);
+    expect(myGrossBalances(sync)).toEqual([{ currency: 'USD', owedCents: 100, owingCents: 100 }]);
+  });
+
+  it('is empty when every person balance is zero', () => {
+    expect(myGrossBalances(makeSync({}))).toEqual([]);
+  });
+});
+
+describe('derived-data memo', () => {
+  it('returns identical results for the same snapshot and recomputes for a new one', () => {
+    const sync = makeSync({
+      groups: [makeGroup(10, [1, 2])],
+      expenses: [
+        makeExpense({
+          groupId: 10,
+          shares: [
+            { userId: 1, paidCents: 200, owedCents: 100 },
+            { userId: 2, paidCents: 0, owedCents: 100 },
+          ],
+        }),
+      ],
+    });
+    expect(groupBalances(sync, 10)).toBe(groupBalances(sync, 10));
+    const next = { ...sync, expenses: [] };
+    expect(groupBalances(next, 10).every((b) => b.netCents === 0)).toBe(true);
+    expect(friendBalance(sync, 2)).toEqual([{ currency: 'USD', netCents: 100 }]);
+    expect(friendBalance(next, 2)).toEqual([]);
   });
 });

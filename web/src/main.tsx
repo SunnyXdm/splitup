@@ -9,8 +9,9 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { Toaster } from '@/components/ui/sonner';
 import { ApiError } from '@/lib/api';
 import { capturePendingInviteFromUrl } from '@/lib/pending-invite';
+import { sanitizePersistedClient, serializeSyncData, shouldPersistQuery } from '@/lib/persist';
 import { setupPwaUpdates } from '@/lib/pwa-update';
-import { SYNC_KEY } from '@/lib/queries';
+import { PERSIST_KEY, SYNC_KEY } from '@/lib/queries';
 
 import './index.css';
 import App from './App.tsx';
@@ -45,14 +46,19 @@ const queryClient: QueryClient = new QueryClient({
   },
 });
 
-const persister = createAsyncStoragePersister({
-  key: 'splitup-cache',
+const basePersister = createAsyncStoragePersister({
+  key: PERSIST_KEY,
   storage: {
     getItem: async (key) => ((await get<string>(key)) ?? null) as string | null,
     setItem: (key, value) => set(key, value),
     removeItem: (key) => del(key),
   },
 });
+const persister = {
+  ...basePersister,
+  persistClient: (client: Parameters<typeof basePersister.persistClient>[0]) =>
+    basePersister.persistClient(sanitizePersistedClient(client)),
+};
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -62,13 +68,15 @@ createRoot(document.getElementById('root')!).render(
         persistOptions={{
           persister,
           maxAge: 30 * DAY_MS,
-          buster: 'v1',
-          // Persist ONLY the offline dataset. Transient queries (invite
-          // previews) must never be revived from disk — a cached preview can
-          // contradict server truth (expired invite, changed relationship).
+          // Tied to the app version: a release that changes the cached shape
+          // drops old snapshots instead of rendering them with new code.
+          buster: `splitup-${__APP_VERSION__}`,
+          // See lib/persist.ts: only the sync dataset (last good snapshot even
+          // after a failed refetch), never temp rows or paused mutations.
           dehydrateOptions: {
-            shouldDehydrateQuery: (query) =>
-              query.queryKey[0] === 'sync' && query.state.status === 'success',
+            shouldDehydrateQuery: shouldPersistQuery,
+            shouldDehydrateMutation: () => false,
+            serializeData: serializeSyncData,
           },
         }}
       >

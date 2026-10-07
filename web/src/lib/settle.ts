@@ -1,4 +1,4 @@
-import { groupBalances, pairwiseForExpense, suggestSettlements } from './balances';
+import { friendBalance, groupSettlements, pairwiseForExpense } from './balances';
 import type { SyncData } from './types';
 
 /**
@@ -47,7 +47,7 @@ export function pairConstituents(
   let direct = 0;
 
   for (const g of sync.groups) {
-    for (const t of suggestSettlements(groupBalances(sync, g.id))) {
+    for (const t of groupSettlements(sync, g.id)) {
       if (t.currency !== currency) continue;
       let cents: number;
       if (t.fromUserId === friendId && t.toUserId === me) cents = t.cents;
@@ -175,7 +175,8 @@ export interface SettlementWatermark {
  * our direct expenses. The server computes the same pair over the same scope
  * and rejects the batch with 409 on any difference. Exact equality (not
  * ordering) is what makes deletions detectable: a deleted row leaves no
- * client-visible tombstone, but it changes the count.
+ * client-visible tombstone, but it changes the count. Optimistic temp rows
+ * are excluded — callers must not settle while an expense write is in flight.
  */
 export function settlementWatermark(sync: SyncData, friendId: number): SettlementWatermark {
   const me = sync.me.id;
@@ -191,6 +192,9 @@ export function settlementWatermark(sync: SyncData, friendId: number): Settlemen
   let watermark = '';
   let watermarkCount = 0;
   for (const e of sync.expenses) {
+    // Optimistic temp rows (negative ids) don't exist server-side yet; their
+    // fake updatedAt / extra count would guarantee a spurious 409.
+    if (e.id < 0) continue;
     const relevant =
       e.groupId !== null
         ? scopeGroups.has(e.groupId)
@@ -200,4 +204,34 @@ export function settlementWatermark(sync: SyncData, friendId: number): Settlemen
     if (e.updatedAt > watermark) watermark = e.updatedAt;
   }
   return { watermark, watermarkCount };
+}
+
+/**
+ * What a full settle with this person looks like right now: the routed edge
+ * inside the group (group mode) or the friend balance (friend mode), in one
+ * currency. Null when there is nothing to settle in that currency.
+ */
+export function currentSuggestion(
+  sync: SyncData,
+  groupId: number | null,
+  counterpartyId: number,
+  currency: string,
+): { cents: number; direction: SettleDirection } | null {
+  const me = sync.me.id;
+  if (groupId !== null) {
+    const edge = groupSettlements(sync, groupId).find(
+      (t) =>
+        t.currency === currency &&
+        ((t.fromUserId === me && t.toUserId === counterpartyId) ||
+          (t.fromUserId === counterpartyId && t.toUserId === me)),
+    );
+    if (!edge) return null;
+    return { cents: edge.cents, direction: edge.toUserId === me ? 'they_paid' : 'i_paid' };
+  }
+  const entry = friendBalance(sync, counterpartyId).find((b) => b.currency === currency);
+  if (!entry || entry.netCents === 0) return null;
+  return {
+    cents: Math.abs(entry.netCents),
+    direction: entry.netCents > 0 ? 'they_paid' : 'i_paid',
+  };
 }

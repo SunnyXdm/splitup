@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useSyncExternalStore } from 'react';
 import { WifiOff } from 'lucide-react';
 

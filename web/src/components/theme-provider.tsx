@@ -1,5 +1,13 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import { flushSync } from 'react-dom';
 
 export type Theme = 'light' | 'dark' | 'amoled' | 'system';
@@ -26,6 +34,12 @@ function systemTheme(): 'light' | 'dark' {
   return window.matchMedia(DARK_QUERY).matches ? 'dark' : 'light';
 }
 
+function subscribeSystemTheme(onChange: () => void): () => void {
+  const media = window.matchMedia(DARK_QUERY);
+  media.addEventListener('change', onChange);
+  return () => media.removeEventListener('change', onChange);
+}
+
 function storedTheme(): Theme {
   const value = localStorage.getItem(STORAGE_KEY);
   // Dark is opt-in: the app starts light until the user explicitly chooses
@@ -42,8 +56,12 @@ function storedVariant(): DarkVariant {
   return storedTheme() === 'amoled' ? 'amoled' : 'dark';
 }
 
-function resolveTheme(theme: Theme, variant: DarkVariant): 'light' | 'dark' | 'amoled' {
-  if (theme === 'system') return systemTheme() === 'dark' ? variant : 'light';
+function resolveTheme(
+  theme: Theme,
+  variant: DarkVariant,
+  system: 'light' | 'dark' = systemTheme(),
+): 'light' | 'dark' | 'amoled' {
+  if (theme === 'system') return system === 'dark' ? variant : 'light';
   return theme;
 }
 
@@ -70,16 +88,14 @@ function applyClasses(resolved: 'light' | 'dark' | 'amoled') {
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(storedTheme);
   const [darkVariant, setVariantState] = useState<DarkVariant>(storedVariant);
-  const resolved = resolveTheme(theme, darkVariant);
+  // OS appearance as React state: an OS light/dark flip re-renders consumers
+  // (toggle icon, Account picker), not just the <html> classes.
+  const system = useSyncExternalStore(subscribeSystemTheme, systemTheme);
+  const resolved = resolveTheme(theme, darkVariant, system);
 
   useEffect(() => {
     applyClasses(resolved);
-    if (theme !== 'system') return;
-    const media = window.matchMedia(DARK_QUERY);
-    const onChange = () => applyClasses(media.matches ? darkVariant : 'light');
-    media.addEventListener('change', onChange);
-    return () => media.removeEventListener('change', onChange);
-  }, [theme, darkVariant, resolved]);
+  }, [resolved]);
 
   const commit = useCallback(
     (nextTheme: Theme, nextVariant: DarkVariant) => {

@@ -1,4 +1,4 @@
-import { MAX_CENTS, currencyDigits, parseDecimalToMinor } from '@/lib/money';
+import { MAX_CENTS, currencyDigits, normalizeAmountText, parseDecimalToMinor } from '@/lib/money';
 
 const symbolCache = new Map<string, string>();
 
@@ -31,8 +31,10 @@ export function centsToInput(cents: number, currency: string): string {
  * Parse a per-member amount field into minor units. Empty counts as 0
  * (unlike parseAmountToCents, which requires a positive total).
  */
-export function parseShareInput(raw: string, currency: string): number | null {
-  const cleaned = raw.replace(/[,\s]/g, '');
+export function parseShareInput(raw: string, currency: string, locale?: string): number | null {
+  // Same locale-aware separator handling as the total ("12,50" is 12.50).
+  const cleaned = normalizeAmountText(raw, locale);
+  if (cleaned === null) return null;
   if (cleaned === '') return 0;
   // Same exact string/integer parsing as the total field, so identical text
   // can never round differently between the two ("1.005" was 101 vs 100).
@@ -42,8 +44,9 @@ export function parseShareInput(raw: string, currency: string): number | null {
 }
 
 /** Parse a percent field into integer basis points (0..10000). Empty = 0. */
-export function parsePercentInput(raw: string): number | null {
-  const cleaned = raw.replace(/[,\s]/g, '');
+export function parsePercentInput(raw: string, locale?: string): number | null {
+  const cleaned = normalizeAmountText(raw, locale);
+  if (cleaned === null) return null;
   if (cleaned === '') return 0;
   const bp = parseDecimalToMinor(cleaned, 2);
   if (bp === null) return null;

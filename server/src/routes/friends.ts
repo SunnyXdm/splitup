@@ -2,10 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { APP_ORIGIN, requireAuth, type AppEnv } from '../auth';
-import { db, nowIso, type UserRow } from '../db';
-import { friendBody, inviteTokenParam } from '../validate';
+import { db, nowIso, type FriendRequestRow, type UserRow } from '../db';
+import { friendBody, idParam, inviteTokenParam } from '../validate';
+import { rateLimit } from '../security';
 import { readJson, toUser } from '../lib/wire';
-import { recordActivity } from '../lib/expense';
+import { areFriends, recordActivity } from '../lib/expense';
 
 interface FriendInviteRow {
   token: string;
@@ -28,20 +29,42 @@ function friendInviteOr404(rawToken: string): FriendInviteRow {
   return invite;
 }
 
-/** Create the friendship in both directions; activity only when it's new. */
-function befriend(meId: number, friend: UserRow): void {
+/**
+ * Create the friendship in both directions and drop any pending requests
+ * between the two; each side gets its own (actor-private) activity row, only
+ * when the friendship is new.
+ */
+function befriend(me: UserRow, friend: UserRow): void {
   db.transaction(() => {
     const now = nowIso();
     const insert = db.prepare(
       'INSERT OR IGNORE INTO friendships (user_id, friend_id, created_at) VALUES (?, ?, ?)',
     );
-    const added = insert.run(meId, friend.id, now).changes > 0;
-    insert.run(friend.id, meId, now);
+    const added = insert.run(me.id, friend.id, now).changes > 0;
+    insert.run(friend.id, me.id, now);
+    deleteRequests(me, friend);
     if (added) {
-      recordActivity(meId, 'friend_added', null, null, `You became friends with ${friend.name}`);
+      recordActivity(me.id, 'friend_added', null, null, `You became friends with ${friend.name}`);
+      recordActivity(friend.id, 'friend_added', null, null, `You became friends with ${me.name}`);
     }
   })();
 }
+
+/** Remove pending requests in either direction between two users. */
+function deleteRequests(a: UserRow, b: UserRow): void {
+  const del = db.prepare('DELETE FROM friend_requests WHERE from_id = ? AND to_email = ?');
+  if (b.email) del.run(a.id, b.email.toLowerCase());
+  if (a.email) del.run(b.id, a.email.toLowerCase());
+}
+
+/** A pending request from `fromId` addressed to `to`'s email. */
+const requestExists = (fromId: number, to: UserRow) =>
+  to.email !== null &&
+  db
+    .prepare('SELECT 1 FROM friend_requests WHERE from_id = ? AND to_email = ?')
+    .get(fromId, to.email.toLowerCase()) !== undefined;
+
+const MAX_PENDING_OUTGOING = 50;
 
 const app = new Hono<AppEnv>();
 app.use(requireAuth);
@@ -82,18 +105,85 @@ app.post('/invites/:token/accept', (c) => {
   const inviter = db
     .prepare<[number], UserRow>('SELECT * FROM users WHERE id = ?')
     .get(invite.user_id)!;
-  befriend(me.id, inviter);
+  // An invite link is the inviter's consent: befriend directly.
+  befriend(me, inviter);
   return c.json({ user: toUser(inviter) });
 });
 
-app.post('/', async (c) => {
+// Requests by email are cheap to spam and would otherwise probe the user
+// table; cap them per session (on top of the global limiter).
+app.post('/', rateLimit(30, 'session', 60 * 60 * 1000), async (c) => {
   const me = c.get('user');
   const { email } = friendBody.parse(await readJson(c));
-  const friend = db.prepare<[string], UserRow>('SELECT * FROM users WHERE email = ?').get(email);
-  if (!friend) throw new HTTPException(404, { message: 'no user with that email' });
-  if (friend.id === me.id) throw new HTTPException(400, { message: 'you cannot add yourself' });
-  befriend(me.id, friend);
-  return c.json({ user: toUser(friend) });
+  if (email === me.email?.toLowerCase()) {
+    throw new HTTPException(400, { message: 'you cannot add yourself' });
+  }
+  const friend = db
+    .prepare<[string, number], UserRow>(
+      'SELECT * FROM users WHERE lower(email) = ? AND id != ? ORDER BY id LIMIT 1',
+    )
+    .get(email, me.id);
+  // Existing friends are already visible to me — no new information leaks.
+  if (friend && areFriends(me.id, friend.id)) {
+    return c.json({ status: 'friends', user: toUser(friend) });
+  }
+  // They already asked me: my request is the acceptance.
+  if (friend && requestExists(friend.id, me)) {
+    befriend(me, friend);
+    return c.json({ status: 'friends', user: toUser(friend) });
+  }
+  // Everything else is stored by email whether or not an account exists, so
+  // the response (and my outgoing list) never reveals account existence.
+  const duplicate = db
+    .prepare('SELECT 1 FROM friend_requests WHERE from_id = ? AND to_email = ?')
+    .get(me.id, email);
+  if (!duplicate) {
+    const { n } = db
+      .prepare<[number], { n: number }>(
+        'SELECT COUNT(*) AS n FROM friend_requests WHERE from_id = ?',
+      )
+      .get(me.id)!;
+    if (n >= MAX_PENDING_OUTGOING) {
+      throw new HTTPException(429, { message: 'too many pending friend requests' });
+    }
+    db.prepare(
+      'INSERT INTO friend_requests (from_id, to_email, created_at) VALUES (?, ?, ?)',
+    ).run(me.id, email, nowIso());
+  }
+  return c.json({ status: 'requested' });
+});
+
+const requestOr404 = (rawId: string) => {
+  const req = db
+    .prepare<[number], FriendRequestRow>('SELECT * FROM friend_requests WHERE id = ?')
+    .get(idParam.parse(rawId));
+  if (!req) throw new HTTPException(404, { message: 'not found' });
+  return req;
+};
+
+app.post('/requests/:id/accept', (c) => {
+  const me = c.get('user');
+  const req = requestOr404(c.req.param('id'));
+  if (me.email === null || req.to_email !== me.email.toLowerCase() || req.from_id === me.id) {
+    throw new HTTPException(404, { message: 'not found' });
+  }
+  const friend = db
+    .prepare<[number], UserRow>('SELECT * FROM users WHERE id = ?')
+    .get(req.from_id)!;
+  befriend(me, friend);
+  return c.json({ status: 'friends', user: toUser(friend) });
+});
+
+// Cancels my outgoing request or declines one addressed to my email; any
+// other request id (or an already-gone one) is 404, like accept.
+app.delete('/requests/:id', (c) => {
+  const me = c.get('user');
+  const req = requestOr404(c.req.param('id'));
+  const mine = req.from_id === me.id;
+  const toMe = me.email !== null && req.to_email === me.email.toLowerCase();
+  if (!mine && !toMe) throw new HTTPException(404, { message: 'not found' });
+  db.prepare('DELETE FROM friend_requests WHERE id = ?').run(req.id);
+  return c.body(null, 204);
 });
 
 export default app;

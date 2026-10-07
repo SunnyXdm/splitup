@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import confetti from 'canvas-confetti';
+import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { Button } from '@/components/ui/button';
@@ -10,12 +11,24 @@ import { UserAvatar } from '@/components/common/UserAvatar';
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { ApiError } from '@/lib/api';
+import { errorMessage, isStale } from '@/lib/api';
 import { friendBalance } from '@/lib/balances';
-import { formatMoney, parseAmountToCents } from '@/lib/money';
-import { useCreateExpense, useSettleUp, useSyncData } from '@/lib/queries';
-import { apportionSettle, pairConstituents, settlementWatermark } from '@/lib/settle';
-import type { ExpenseInput, User } from '@/lib/types';
+import { createClientKeyTracker } from '@/lib/client-key';
+import { formatMoney, isCanonicalAmount, parseAmountToCents } from '@/lib/money';
+import {
+  SYNC_KEY,
+  useCreateExpense,
+  useExpenseWritePending,
+  useSettleUp,
+  useSyncData,
+} from '@/lib/queries';
+import {
+  apportionSettle,
+  currentSuggestion,
+  pairConstituents,
+  settlementWatermark,
+} from '@/lib/settle';
+import type { ExpenseInput, SyncData, User } from '@/lib/types';
 import { centsToInput, currencySymbol, todayISO } from './money-input';
 
 export type SettleDirection = 'i_paid' | 'they_paid';
@@ -77,21 +90,52 @@ function SettleBody({
   currency: initialCurrency,
   direction: initialDirection,
 }: Omit<SettleUpSheetProps, 'open'>) {
+  const qc = useQueryClient();
   const { data: sync } = useSyncData();
   const online = useOnline();
   const createExpense = useCreateExpense();
   const settleUp = useSettleUp();
+  // Any optimistic expense write in flight means the cached balances (and the
+  // watermark) don't match the server yet — recording now would 409 or route
+  // against numbers that are about to change.
+  const writePending = useExpenseWritePending();
+  const keyFor = useRef(createClientKeyTracker()).current;
 
   const [direction, setDirection] = useState<Direction>(initialDirection ?? 'i_paid');
-  const [counterpartyId, setCounterpartyId] = useState<number | null>(toUserId ?? null);
+  const [chosenCounterpartyId, setCounterpartyId] = useState<number | null>(toUserId ?? null);
   const [currency, setCurrency] = useState(initialCurrency);
   const [amountRaw, setAmountRaw] = useState(
     suggestedCents !== undefined ? centsToInput(suggestedCents, initialCurrency) : '',
   );
+  // The amount that would clear the balance exactly (for the confetti moment);
+  // refreshed when a stale 409 brings new balances.
+  const [suggestion, setSuggestion] = useState<number | undefined>(suggestedCents);
   const [attempted, setAttempted] = useState(false);
 
   // Friend mode can hold balances in several currencies; each is settled in
   // its own run of the sheet, so offer a switcher when more than one exists.
+  const options: User[] = useMemo(() => {
+    if (!sync) return [];
+    const ids =
+      groupId !== null
+        ? (sync.groups.find((g) => g.id === groupId)?.memberIds ?? []).filter(
+            (id) => id !== sync.me.id,
+          )
+        : sync.friendIds;
+    const pool = new Set(ids);
+    if (chosenCounterpartyId !== null) pool.add(chosenCounterpartyId);
+    return [...pool].map(
+      (id) =>
+        sync.users.find((u) => u.id === id) ?? { id, name: 'Someone', email: null, picture: null },
+    );
+  }, [sync, groupId, chosenCounterpartyId]);
+
+  // Auto-select only an unambiguous counterparty; guessing (e.g. the first
+  // member by join order) invites recording a payment against the wrong
+  // person — the user must choose explicitly.
+  const counterpartyId =
+    chosenCounterpartyId ?? (options.length === 1 ? options[0].id : null);
+
   const balanceEntries = useMemo(
     () =>
       groupId === null && sync && counterpartyId !== null
@@ -111,8 +155,10 @@ function SettleBody({
     if (entry) {
       setAmountRaw(centsToInput(Math.abs(entry.netCents), next));
       setDirection(entry.netCents > 0 ? 'they_paid' : 'i_paid');
+      setSuggestion(Math.abs(entry.netCents));
     } else {
       setAmountRaw('');
+      setSuggestion(undefined);
     }
   };
 
@@ -127,29 +173,6 @@ function SettleBody({
     const constituents = pairConstituents(sync, counterpartyId, currency);
     return apportionSettle(constituents, amountCents, direction, sync.me.id, counterpartyId);
   }, [groupId, sync, counterpartyId, currency, amountCents, direction]);
-
-  const options: User[] = useMemo(() => {
-    if (!sync) return [];
-    const ids =
-      groupId !== null
-        ? (sync.groups.find((g) => g.id === groupId)?.memberIds ?? []).filter(
-            (id) => id !== sync.me.id,
-          )
-        : sync.friendIds;
-    const pool = new Set(ids);
-    if (counterpartyId !== null) pool.add(counterpartyId);
-    return [...pool].map(
-      (id) =>
-        sync.users.find((u) => u.id === id) ?? { id, name: 'Someone', email: null, picture: null },
-    );
-  }, [sync, groupId, counterpartyId]);
-
-  useEffect(() => {
-    // Auto-select only an unambiguous counterparty; guessing (e.g. the first
-    // member by join order) invites recording a payment against the wrong
-    // person — the user must choose explicitly.
-    if (counterpartyId === null && options.length === 1) setCounterpartyId(options[0].id);
-  }, [counterpartyId, options]);
 
   if (!sync) {
     return (
@@ -173,8 +196,8 @@ function SettleBody({
     toast('Payment recorded');
     // The delight moment: this payment cleared the suggested balance exactly.
     if (
-      suggestedCents !== undefined &&
-      amountCents === suggestedCents &&
+      suggestion !== undefined &&
+      amountCents === suggestion &&
       !window.matchMedia('(prefers-reduced-motion: reduce)').matches
     ) {
       void confetti({
@@ -189,44 +212,73 @@ function SettleBody({
     onOpenChange(false);
   };
 
+  // 409 'stale': balances moved under us (someone recorded or edited
+  // something). Pull the fresh dataset and re-suggest from the NEW balance, so
+  // the user reviews real numbers instead of re-submitting the old amount.
+  const refreshAfterStale = async (counterId: number) => {
+    toast.error('Balances changed — the amount has been updated, review it and try again.');
+    await qc.refetchQueries({ queryKey: SYNC_KEY });
+    const fresh = qc.getQueryData<SyncData>(SYNC_KEY);
+    if (!fresh) return;
+    const next = currentSuggestion(fresh, groupId, counterId, currency);
+    setSuggestion(next?.cents);
+    setAmountRaw(next ? centsToInput(next.cents, currency) : '');
+    if (next) setDirection(next.direction);
+  };
+
   const handleSave = () => {
     setAttempted(true);
-    if (amountCents === null || counterparty === null) return;
+    if (amountCents === null || counterparty === null || writePending) return;
+
+    const callbacks = {
+      onSuccess: celebrate,
+      onError: (err: Error) => {
+        if (isStale(err)) void refreshAfterStale(counterparty.id);
+        else toast.error(errorMessage(err));
+      },
+    };
 
     if (groupId === null) {
       // Friend mode: record the apportioned rows atomically.
       if (settleRows.length === 0) return;
-      settleUp.mutate(
-        {
-          counterpartyId: counterparty.id,
-          currency,
-          date: todayISO(),
-          ...settlementWatermark(sync, counterparty.id),
-          rows: settleRows.map(({ groupId: g, payerId, recipientId, amountCents: cents }) => ({
-            groupId: g,
-            payerId,
-            recipientId,
-            amountCents: cents,
-          })),
-        },
-        {
-          onSuccess: celebrate,
-          onError: (err: Error) => {
-            if (err instanceof ApiError && err.status === 409) {
-              // Balances moved under us; the sheet stays open and the
-              // breakdown recomputes from the refetched data.
-              toast.error('Balances changed — review the updated amounts and try again.');
-            } else {
-              toast.error(err.message);
-            }
-          },
-        },
-      );
+      const rows = settleRows.map(({ groupId: g, payerId, recipientId, amountCents: cents }) => ({
+        groupId: g,
+        payerId,
+        recipientId,
+        amountCents: cents,
+      }));
+      const body = {
+        counterpartyId: counterparty.id,
+        currency,
+        date: todayISO(),
+        ...settlementWatermark(sync, counterparty.id),
+        rows,
+      };
+      settleUp.mutate({ ...body, clientKey: keyFor(body) }, callbacks);
       return;
     }
 
     const payerId = direction === 'i_paid' ? me.id : counterparty.id;
     const recipientId = direction === 'i_paid' ? counterparty.id : me.id;
+    const group = sync.groups.find((g) => g.id === groupId);
+
+    if (group && currency === group.currency) {
+      // In-group settle goes through the settlements endpoint too: the
+      // watermark makes a concurrent, stale settle fail with 409 instead of
+      // landing on top of the other one and reversing the debt.
+      const body = {
+        counterpartyId: counterparty.id,
+        currency,
+        date: todayISO(),
+        ...settlementWatermark(sync, counterparty.id),
+        rows: [{ groupId, payerId, recipientId, amountCents }],
+      };
+      settleUp.mutate({ ...body, clientKey: keyFor(body) }, callbacks);
+      return;
+    }
+
+    // Legacy edge in a non-group currency: the settlements endpoint only
+    // accepts group-currency rows, so record a plain payment.
     const input: ExpenseInput = {
       groupId,
       description: 'Payment',
@@ -241,10 +293,7 @@ function SettleBody({
         { userId: recipientId, paidCents: 0, owedCents: amountCents },
       ],
     };
-    createExpense.mutate(input, {
-      onSuccess: celebrate,
-      onError: (err: Error) => toast.error(err.message),
-    });
+    createExpense.mutate({ ...input, clientKey: keyFor(input) }, callbacks);
   };
 
   return (
@@ -345,6 +394,8 @@ function SettleBody({
             </InputGroup>
             {attempted && amountError ? (
               <FieldDescription className="text-destructive">{amountError}</FieldDescription>
+            ) : amountCents !== null && !isCanonicalAmount(amountRaw) && counterparty === null ? (
+              <FieldDescription>= {formatMoney(amountCents, currency)}</FieldDescription>
             ) : amountCents !== null && counterparty !== null ? (
               <FieldDescription>
                 {direction === 'i_paid'
@@ -404,10 +455,14 @@ function SettleBody({
           <FieldDescription className="text-center">
             You're offline — viewing only.
           </FieldDescription>
+        ) : writePending && !createExpense.isPending && !settleUp.isPending ? (
+          <FieldDescription className="text-center">
+            Waiting for your other changes to save…
+          </FieldDescription>
         ) : null}
         <Button
           className="h-12 w-full rounded-full"
-          disabled={!online || createExpense.isPending || settleUp.isPending}
+          disabled={!online || writePending}
           onClick={handleSave}
         >
           {createExpense.isPending || settleUp.isPending ? (

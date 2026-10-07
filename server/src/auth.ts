@@ -41,13 +41,14 @@ export function upsertUserFromClaims(claims: ShooClaims): UserRow {
   const email = claims.email_verified ? (claims.email?.toLowerCase() ?? null) : null;
   const picture = claims.picture ?? null;
   if (existing) {
+    // The token's name only seeds new accounts: users rename themselves in
+    // settings, and every sign-in must not silently revert that choice.
     db.prepare(
       `UPDATE users SET
          email = COALESCE(?, email),
-         name = COALESCE(?, name),
          picture = COALESCE(?, picture)
        WHERE id = ?`,
-    ).run(email, claims.name ?? null, picture, existing.id);
+    ).run(email, picture, existing.id);
   } else {
     const name = claims.name ?? claims.email?.split('@')[0] ?? 'Someone';
     db.prepare(
@@ -59,7 +60,7 @@ export function upsertUserFromClaims(claims: ShooClaims): UserRow {
     .get(claims.pairwise_sub)!;
 }
 
-const COOKIE_NAME = 'splitup_session';
+export const COOKIE_NAME = 'splitup_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const RENEW_BELOW_MS = 15 * 24 * 60 * 60 * 1000;
 
@@ -118,6 +119,18 @@ export function sessionUser(c: Context): UserRow | null {
     });
   }
   return db.prepare<[number], UserRow>('SELECT * FROM users WHERE id = ?').get(session.user_id) ?? null;
+}
+
+/** Cheap indexed check that a cookie token maps to a live session row. */
+export function hasLiveSession(token: string): boolean {
+  if (!/^[0-9a-f]{64}$/.test(token)) return false;
+  return (
+    db
+      .prepare<[string, string], { one: number }>(
+        'SELECT 1 AS one FROM sessions WHERE id = ? AND expires_at > ?',
+      )
+      .get(hashToken(token), nowIso()) !== undefined
+  );
 }
 
 export function destroySession(c: Context): void {

@@ -17,6 +17,18 @@ const MAX_CENTS = 100_000_000;
 const currency = z.string().regex(/^[A-Z]{3}$/);
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** A real calendar date: YYYY-MM-DD that survives a UTC round-trip (no 2024-02-30). */
+const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((d) => {
+    const t = Date.parse(`${d}T00:00:00Z`);
+    return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === d;
+  }, 'invalid date');
+
+/** Client-generated idempotency key for create retries. */
+const clientKeySchema = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/, 'invalid clientKey');
+
 export const idParam = z.coerce.number().int().positive();
 export const inviteTokenParam = z.string().regex(/^[0-9a-f]{16,64}$/);
 
@@ -55,49 +67,57 @@ const shareSchema = z.strictObject({
   owedCents: z.number().int().min(0).max(MAX_CENTS),
 });
 
-export const expenseBody = z
-  .strictObject({
-    groupId: z.number().int().positive().nullable(),
-    description: z.string().trim().min(1).max(200),
-    amountCents: z.number().int().min(1).max(MAX_CENTS),
-    currency,
-    date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .refine((d) => !Number.isNaN(Date.parse(d)), 'invalid date'),
-    category: z.enum(CATEGORIES),
-    notes: z.string().trim().max(1000).nullable(),
-    isPayment: z.boolean(),
-    shares: z.array(shareSchema).min(1).max(50),
-  })
-  .superRefine((e, ctx) => {
-    const userIds = new Set(e.shares.map((s) => s.userId));
-    if (userIds.size !== e.shares.length) {
-      ctx.addIssue({ code: 'custom', message: 'duplicate share user' });
-    }
-    const paid = e.shares.reduce((sum, s) => sum + s.paidCents, 0);
-    const owed = e.shares.reduce((sum, s) => sum + s.owedCents, 0);
-    if (paid !== e.amountCents || owed !== e.amountCents) {
-      ctx.addIssue({ code: 'custom', message: 'shares must sum to the amount' });
-    }
-    if (e.groupId === null && e.shares.length !== 2) {
-      ctx.addIssue({ code: 'custom', message: 'non-group expenses need exactly 2 people' });
-    }
-    // Payments are strictly one payer → one recipient; every display and
-    // summary assumes it, and self-payments are meaningless no-ops.
-    if (
-      e.isPayment &&
-      !(
-        e.shares.length === 2 &&
-        e.shares.some((s) => s.paidCents === e.amountCents && s.owedCents === 0) &&
-        e.shares.some((s) => s.paidCents === 0 && s.owedCents === e.amountCents)
-      )
-    ) {
-      ctx.addIssue({ code: 'custom', message: 'a payment needs exactly one payer and one recipient' });
-    }
-  });
+const expenseFields = z.strictObject({
+  groupId: z.number().int().positive().nullable(),
+  description: z.string().trim().min(1).max(200),
+  amountCents: z.number().int().min(1).max(MAX_CENTS),
+  currency,
+  date: isoDate,
+  category: z.enum(CATEGORIES),
+  notes: z.string().trim().max(1000).nullable(),
+  isPayment: z.boolean(),
+  shares: z.array(shareSchema).min(1).max(50),
+});
 
-export type ExpenseBody = z.infer<typeof expenseBody>;
+function refineExpense(e: z.infer<typeof expenseFields>, ctx: z.RefinementCtx): void {
+  const userIds = new Set(e.shares.map((s) => s.userId));
+  if (userIds.size !== e.shares.length) {
+    ctx.addIssue({ code: 'custom', message: 'duplicate share user' });
+  }
+  const paid = e.shares.reduce((sum, s) => sum + s.paidCents, 0);
+  const owed = e.shares.reduce((sum, s) => sum + s.owedCents, 0);
+  if (paid !== e.amountCents || owed !== e.amountCents) {
+    ctx.addIssue({ code: 'custom', message: 'shares must sum to the amount' });
+  }
+  if (e.groupId === null && e.shares.length !== 2) {
+    ctx.addIssue({ code: 'custom', message: 'non-group expenses need exactly 2 people' });
+  }
+  // Payments are strictly one payer → one recipient; every display and
+  // summary assumes it, and self-payments are meaningless no-ops.
+  if (
+    e.isPayment &&
+    !(
+      e.shares.length === 2 &&
+      e.shares.some((s) => s.paidCents === e.amountCents && s.owedCents === 0) &&
+      e.shares.some((s) => s.paidCents === 0 && s.owedCents === e.amountCents)
+    )
+  ) {
+    ctx.addIssue({ code: 'custom', message: 'a payment needs exactly one payer and one recipient' });
+  }
+}
+
+export const expenseCreateBody = expenseFields
+  .extend({ clientKey: clientKeySchema.optional() })
+  .superRefine(refineExpense);
+
+export const expensePatchBody = expenseFields
+  .extend({
+    /** The updatedAt the client last saw; a mismatch → 409 conflict. */
+    expectedUpdatedAt: z.string().max(40).optional(),
+  })
+  .superRefine(refineExpense);
+
+export type ExpenseBody = z.infer<typeof expenseFields>;
 
 const settleRow = z.strictObject({
   groupId: z.number().int().positive().nullable(),
@@ -111,10 +131,8 @@ export const settlementsBody = z
   .strictObject({
     counterpartyId: z.number().int().positive(),
     currency,
-    date: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .refine((d) => !Number.isNaN(Date.parse(d)), 'invalid date'),
+    date: isoDate,
+    clientKey: clientKeySchema.optional(),
     /**
      * Freshness fingerprint of the pair-scope expenses the client's breakdown
      * was computed from: max updatedAt + row count. Any difference → 409.

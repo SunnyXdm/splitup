@@ -39,3 +39,25 @@ export async function api<T>(path: string, { method = 'GET', body }: ApiOptions 
   }
   return data as T;
 }
+
+/** The server's 409 when an edit started from an outdated copy of the expense. */
+export const isConflict = (err: unknown): boolean =>
+  err instanceof ApiError && err.status === 409 && err.message === 'conflict';
+
+/** The server's 409 when a change would move a departed member's balance. */
+export const isDepartedMember = (err: unknown): boolean =>
+  err instanceof ApiError && err.status === 409 && err.message === 'departed member';
+
+/** The settlements endpoint's 409 when balances moved since the breakdown. */
+export const isStale = (err: unknown): boolean =>
+  err instanceof ApiError && err.status === 409 && err.message === 'stale';
+
+/** Human copy for a failed write: known server codes get a clear sentence. */
+export function errorMessage(err: unknown): string {
+  if (isConflict(err)) return 'Someone else changed this expense — reopen to see the latest.';
+  if (isDepartedMember(err)) {
+    return 'This would change the balance of someone who left the group.';
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return 'Something went wrong — please try again.';
+}

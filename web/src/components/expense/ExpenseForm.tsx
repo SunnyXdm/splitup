@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { CategoryIcon } from '@/components/common/CategoryIcon';
@@ -25,8 +26,16 @@ import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { CATEGORIES, CATEGORY_META } from '@/lib/categories';
-import { formatMoney, parseAmountToCents } from '@/lib/money';
-import { useCreateExpense, useDeleteExpense, useSyncData, useUpdateExpense } from '@/lib/queries';
+import { errorMessage, isConflict } from '@/lib/api';
+import { createClientKeyTracker } from '@/lib/client-key';
+import { formatMoney, isCanonicalAmount, parseAmountToCents } from '@/lib/money';
+import {
+  SYNC_KEY,
+  useCreateExpense,
+  useDeleteExpense,
+  useSyncData,
+  useUpdateExpense,
+} from '@/lib/queries';
 import type { Category, Expense, ExpenseInput, ExpenseShare, SyncData, User } from '@/lib/types';
 import { centsToInput, currencySymbol, todayISO } from './money-input';
 import { PayerPicker, defaultPayerState, payerStateFromShares, resolvePaid, type PayerState } from './PayerPicker';
@@ -109,7 +118,9 @@ function FormFields({
   expense,
   friendId,
 }: Omit<ExpenseFormProps, 'open'> & { sync: SyncData }) {
+  const qc = useQueryClient();
   const online = useOnline();
+  const keyFor = useRef(createClientKeyTracker()).current;
   const createExpense = useCreateExpense();
   const updateExpense = useUpdateExpense();
   const deleteExpense = useDeleteExpense();
@@ -251,10 +262,26 @@ function FormFields({
         toast(isEdit ? 'Expense updated' : 'Expense added');
         onOpenChange(false);
       },
-      onError: (err: Error) => toast.error(err.message),
+      onError: (err: Error) => {
+        toast.error(errorMessage(err));
+        if (isConflict(err)) {
+          // Our copy is outdated: close and pull the latest so a reopen
+          // starts from what the other person saved.
+          void qc.invalidateQueries({ queryKey: SYNC_KEY });
+          onOpenChange(false);
+        }
+      },
     };
-    if (expense) updateExpense.mutate({ id: expense.id, ...input }, callbacks);
-    else createExpense.mutate(input, callbacks);
+    if (expense) {
+      updateExpense.mutate(
+        // `expense` is the snapshot this edit started from — its updatedAt is
+        // the conflict token, even if a refetch has updated the cache since.
+        { id: expense.id, expectedUpdatedAt: expense.updatedAt, ...input },
+        callbacks,
+      );
+    } else {
+      createExpense.mutate({ ...input, clientKey: keyFor(input) }, callbacks);
+    }
   };
 
   const handleDelete = () => {
@@ -265,7 +292,7 @@ function FormFields({
         setConfirmOpen(false);
         onOpenChange(false);
       },
-      onError: (err: Error) => toast.error(err.message),
+      onError: (err: Error) => toast.error(errorMessage(err)),
     });
   };
 
@@ -287,6 +314,7 @@ function FormFields({
               id="expense-description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              maxLength={200}
               placeholder="Dinner, taxi, rent…"
               className="h-11 rounded-full px-4"
             />
@@ -306,6 +334,7 @@ function FormFields({
                 <InputGroupAddon className="pl-1.5">
                   <PickerSelect
                     title="Currency"
+                    aria-label="Currency"
                     className="h-8 w-auto border-0 px-2.5 font-medium"
                     value={currency}
                     onValueChange={setCurrency}
@@ -328,7 +357,9 @@ function FormFields({
             </InputGroup>
             {attempted && amountError ? (
               <FieldDescription className="text-destructive">{amountError}</FieldDescription>
-            ) : /[+\-*/()]/.test(amountRaw) && amountCents !== null ? (
+            ) : amountCents !== null && !isCanonicalAmount(amountRaw) ? (
+              // Anything but a plain "12.50" (math, "12,50", grouping) shows
+              // how it was read, so a misparse can't slip through unseen.
               <FieldDescription>= {formatMoney(amountCents, currency)}</FieldDescription>
             ) : null}
           </Field>
@@ -402,6 +433,7 @@ function FormFields({
                 id="expense-notes"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
+                maxLength={1000}
                 placeholder="Anything worth remembering"
                 className="rounded-[20px] px-4"
               />

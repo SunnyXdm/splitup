@@ -1,4 +1,5 @@
 import { format, formatDistanceToNow, isToday, isYesterday } from 'date-fns';
+import { parseDateSafe } from '@/lib/dates';
 import {
   CalendarClock,
   HandCoins,
@@ -29,7 +30,8 @@ const TYPE_ICON: Record<ActivityType, LucideIcon> = {
 };
 
 function dayLabel(iso: string): string {
-  const d = new Date(iso);
+  const d = parseDateSafe(iso);
+  if (!d) return 'Earlier';
   if (isToday(d)) return 'Today';
   if (isYesterday(d)) return 'Yesterday';
   return format(d, 'MMMM d, yyyy');
@@ -80,7 +82,10 @@ export default function Activity() {
                       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                         <p className="text-sm">{item.summary}</p>
                         <p className="text-xs text-muted-foreground">
-                          {formatDistanceToNow(new Date(item.createdAt), { addSuffix: true })}
+                          {(() => {
+                            const d = parseDateSafe(item.createdAt);
+                            return d ? formatDistanceToNow(d, { addSuffix: true }) : '';
+                          })()}
                         </p>
                       </div>
                     </div>

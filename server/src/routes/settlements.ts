@@ -7,6 +7,7 @@ import { readJson, type Expense } from '../lib/wire';
 import {
   areFriends,
   expenseWire,
+  groupNet,
   insertShares,
   isMember,
   memberGroupOr404,
@@ -43,6 +44,18 @@ app.post('/', async (c) => {
   const me = c.get('user');
   const body = settlementsBody.parse(await readJson(c));
 
+  // Idempotent retry: row 0 carries the key, row i>0 carries `key:i` (':' is
+  // outside the key alphabet, so no collisions). Replay → original rows.
+  if (body.clientKey !== undefined) {
+    const prior = db
+      .prepare<[number, string, number, string], { id: number }>(
+        `SELECT id FROM expenses WHERE created_by = ?
+           AND (client_key = ? OR substr(client_key, 1, ?) = ?) ORDER BY id`,
+      )
+      .all(me.id, body.clientKey, body.clientKey.length + 1, `${body.clientKey}:`);
+    if (prior.length > 0) return c.json({ expenses: prior.map((r) => expenseWire(r.id)) });
+  }
+
   if (body.counterpartyId === me.id) {
     throw new HTTPException(400, { message: 'you cannot settle with yourself' });
   }
@@ -50,6 +63,8 @@ app.post('/', async (c) => {
     throw new HTTPException(400, { message: 'you can only settle with a friend' });
   }
   const pair = new Set([me.id, body.counterpartyId]);
+  // Running group net of a departed counterparty, per group, as rows apply.
+  const departedNet = new Map<number, number>();
   for (const row of body.rows) {
     if (!pair.has(row.payerId) || !pair.has(row.recipientId)) {
       throw new HTTPException(400, { message: 'rows must be between you and the counterparty' });
@@ -59,11 +74,21 @@ app.post('/', async (c) => {
       if (body.currency !== group.currency) {
         throw new HTTPException(400, { message: 'group payments must use the group currency' });
       }
-      if (
-        !isMember(row.groupId, body.counterpartyId) &&
-        !hasShareHistory(row.groupId, body.counterpartyId)
-      ) {
-        throw new HTTPException(400, { message: 'counterparty has no history in that group' });
+      if (!isMember(row.groupId, body.counterpartyId)) {
+        if (!hasShareHistory(row.groupId, body.counterpartyId)) {
+          throw new HTTPException(400, { message: 'counterparty has no history in that group' });
+        }
+        // A departed member can only be settled toward zero, never past it —
+        // they can't see the group to notice (or dispute) a new debt.
+        const net =
+          departedNet.get(row.groupId) ??
+          groupNet(row.groupId, body.counterpartyId, body.currency);
+        const next =
+          net + (row.payerId === body.counterpartyId ? row.amountCents : -row.amountCents);
+        if (net === 0 || Math.sign(next) === -Math.sign(net) || Math.abs(next) >= Math.abs(net)) {
+          throw new HTTPException(409, { message: 'departed member' });
+        }
+        departedNet.set(row.groupId, next);
       }
     }
   }
@@ -114,7 +139,7 @@ app.post('/', async (c) => {
   const now = nowIso();
   const expenses = db.transaction(() => {
     const created: Expense[] = [];
-    for (const row of body.rows) {
+    for (const [i, row] of body.rows.entries()) {
       const shares = [
         { userId: row.payerId, paidCents: row.amountCents, owedCents: 0 },
         { userId: row.recipientId, paidCents: 0, owedCents: row.amountCents },
@@ -122,10 +147,19 @@ app.post('/', async (c) => {
       const info = db
         .prepare(
           `INSERT INTO expenses (group_id, description, amount_cents, currency, date, category, notes,
-             is_payment, created_by, created_at, updated_at)
-           VALUES (?, 'Payment', ?, ?, ?, 'general', NULL, 1, ?, ?, ?)`,
+             is_payment, created_by, created_at, updated_at, client_key)
+           VALUES (?, 'Payment', ?, ?, ?, 'general', NULL, 1, ?, ?, ?, ?)`,
         )
-        .run(row.groupId, row.amountCents, body.currency, body.date, me.id, now, now);
+        .run(
+          row.groupId,
+          row.amountCents,
+          body.currency,
+          body.date,
+          me.id,
+          now,
+          now,
+          body.clientKey === undefined ? null : i === 0 ? body.clientKey : `${body.clientKey}:${i}`,
+        );
       const id = Number(info.lastInsertRowid);
       insertShares(id, shares);
       recordActivity(

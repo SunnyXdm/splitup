@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { format, parseISO } from 'date-fns';
 import { HandCoins } from 'lucide-react';
 import { toast } from 'sonner';
 import { CategoryIcon } from '@/components/common/CategoryIcon';
@@ -15,6 +14,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { formatDateSafe } from '@/lib/dates';
+import { errorMessage } from '@/lib/api';
 import { formatMoney } from '@/lib/money';
 import { useDeleteExpense } from '@/lib/queries';
 import type { Expense, SyncData } from '@/lib/types';
@@ -51,18 +52,21 @@ export default function ExpenseHistory({
     if (!paymentToDelete) return;
     deleteExpense.mutate(paymentToDelete.id, {
       onSuccess: () => toast('Payment deleted'),
-      onError: (err) => toast.error(err.message),
+      onError: (err) => toast.error(errorMessage(err)),
       onSettled: () => setPaymentToDelete(null),
     });
   };
 
+  // Defensive: a malformed row (old cache, server bug) must not crash the list.
   const sorted = [...expenses].sort(
     (a, b) =>
-      b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt) || b.id - a.id,
+      String(b.date ?? '').localeCompare(String(a.date ?? '')) ||
+      String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')) ||
+      b.id - a.id,
   );
   const months: { label: string; items: Expense[] }[] = [];
   for (const e of sorted) {
-    const label = format(parseISO(e.date), 'MMMM yyyy');
+    const label = formatDateSafe(e.date, 'MMMM yyyy');
     const last = months[months.length - 1];
     if (last && last.label === label) last.items.push(e);
     else months.push({ label, items: [e] });
@@ -72,7 +76,7 @@ export default function ExpenseHistory({
     <div className="flex flex-col gap-6">
       {months.map(({ label, items }, sectionIndex) => (
         <section
-          key={label}
+          key={`${label}-${sectionIndex}`}
           className="flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2 fill-mode-backwards duration-300 motion-reduce:animate-none"
           style={{ animationDelay: `${Math.min(sectionIndex, 6) * 60}ms` }}
         >
@@ -183,7 +187,7 @@ function ExpenseRow({
           {tag ? <Tag tag={tag} /> : null}
         </span>
         <span className="truncate text-xs text-muted-foreground">
-          {format(parseISO(e.date), 'MMM d')} · {paidLine}
+          {formatDateSafe(e.date, 'MMM d', '—')} · {paidLine}
         </span>
       </span>
       <span className="flex shrink-0 flex-col items-end gap-0.5">

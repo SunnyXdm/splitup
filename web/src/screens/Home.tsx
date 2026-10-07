@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { useCallback, useState } from 'react';
+import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { ArrowUpRight, Plus, UsersRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -24,10 +24,18 @@ import { GROUP_EMOJI } from '@/components/group/group-emoji';
 import GroupFormFields, { type GroupFormValues } from '@/components/group/GroupFormFields';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { NumberTicker } from '@/components/ui/number-ticker';
-import { groupBalances, myTotalBalance, type CurrencyAmount } from '@/lib/balances';
+import {
+  groupBalances,
+  myGrossBalances,
+  myTotalBalance,
+  type CurrencyAmount,
+  type GrossBalance,
+} from '@/lib/balances';
 import { formatMoney } from '@/lib/money';
+import { errorMessage } from '@/lib/api';
 import { useCreateGroup, useSyncData } from '@/lib/queries';
 import type { SyncData } from '@/lib/types';
+import { useOverlayNavigate } from '@/lib/use-history-dismiss';
 
 export default function Home() {
   const { data: sync } = useSyncData();
@@ -36,9 +44,10 @@ export default function Home() {
   if (!sync) return <HomeSkeleton />;
 
   const totals = myTotalBalance(sync).filter((t) => t.netCents !== 0);
+  const gross = myGrossBalances(sync);
   return (
     <div className="flex flex-col gap-8 pb-6">
-      <BalanceHero totals={totals} />
+      <BalanceHero totals={totals} gross={gross} />
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <span className="eyebrow">Groups</span>
@@ -72,7 +81,10 @@ export default function Home() {
  * The signature moment: an ink stadium card with cream text, one thin orange
  * orbital arc and a white satellite circle docked on its edge (→ /activity).
  */
-function BalanceHero({ totals }: { totals: CurrencyAmount[] }) {
+function BalanceHero({ totals, gross }: { totals: CurrencyAmount[]; gross: GrossBalance[] }) {
+  // Currencies whose per-person balances are open but cancel out overall
+  // (owe B 100, C owes me 100): zero net is NOT "settled up".
+  const offsetting = gross.filter((g) => !totals.some((t) => t.currency === g.currency));
   return (
     <section className="relative">
       <div className="relative overflow-hidden rounded-[40px] bg-primary px-7 pt-9 pb-12 text-primary-foreground shadow-[0_24px_48px_rgba(0,0,0,0.08)] sm:px-10 sm:pt-11 sm:pb-14">
@@ -93,7 +105,7 @@ function BalanceHero({ totals }: { totals: CurrencyAmount[] }) {
         </svg>
         <div className="relative flex flex-col gap-2">
           <span className="text-sm text-primary-foreground/70">Total balance</span>
-          {totals.length === 0 ? (
+          {totals.length === 0 && offsetting.length === 0 ? (
             <p className="text-3xl font-medium tracking-tight sm:text-4xl">
               You&rsquo;re all settled up
             </p>
@@ -103,17 +115,31 @@ function BalanceHero({ totals }: { totals: CurrencyAmount[] }) {
                 <p
                   key={t.currency}
                   className={
-                    totals.length > 1
+                    totals.length + offsetting.length > 1
                       ? 'text-2xl font-medium tracking-tight sm:text-3xl'
                       : 'text-3xl font-medium tracking-tight sm:text-4xl'
                   }
                 >
                   {t.netCents > 0 ? 'You are owed ' : 'You owe '}
-                  <NumberTicker
-                    value={Math.abs(t.netCents)}
-                    format={(cents) => formatMoney(Math.round(cents), t.currency)}
-                  />
+                  <MoneyTicker cents={Math.abs(t.netCents)} currency={t.currency} />
                 </p>
+              ))}
+              {offsetting.map((g) => (
+                <div key={g.currency} className="flex flex-col gap-0.5">
+                  <p
+                    className={
+                      totals.length + offsetting.length > 1
+                        ? 'text-2xl font-medium tracking-tight sm:text-3xl'
+                        : 'text-3xl font-medium tracking-tight sm:text-4xl'
+                    }
+                  >
+                    Your {g.currency} balances even out
+                  </p>
+                  <p className="text-sm text-primary-foreground/70">
+                    You owe {formatMoney(g.owingCents, g.currency)} and are owed{' '}
+                    {formatMoney(g.owedCents, g.currency)} — settle each person separately.
+                  </p>
+                </div>
               ))}
             </div>
           )}
@@ -128,6 +154,16 @@ function BalanceHero({ totals }: { totals: CurrencyAmount[] }) {
       </Link>
     </section>
   );
+}
+
+/**
+ * Animated money amount. The formatter is memoized on the currency so the
+ * ticker's effect only restarts when the VALUE changes — an inline closure
+ * was a new function every render and replayed the count-up on any re-render.
+ */
+function MoneyTicker({ cents, currency }: { cents: number; currency: string }) {
+  const format = useCallback((v: number) => formatMoney(Math.round(v), currency), [currency]);
+  return <NumberTicker value={cents} format={format} />;
 }
 
 function GroupList({ sync }: { sync: SyncData }) {
@@ -213,7 +249,8 @@ function NewGroupDialog({
   onOpenChange: (open: boolean) => void;
   defaultCurrency: string;
 }) {
-  const navigate = useNavigate();
+  // Navigates to the new group while this dialog is still open.
+  const navigate = useOverlayNavigate();
   const online = useOnline();
   const createGroup = useCreateGroup();
   const [values, setValues] = useState<GroupFormValues>({
@@ -239,7 +276,7 @@ function NewGroupDialog({
           onOpenChange(false);
           navigate(`/groups/${group.id}`);
         },
-        onError: (err) => toast.error(err.message),
+        onError: (err) => toast.error(errorMessage(err)),
       },
     );
   };

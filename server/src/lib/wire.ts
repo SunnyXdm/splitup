@@ -70,6 +70,24 @@ export interface ActivityItem {
   createdAt: string;
 }
 
+export interface IncomingFriendRequest {
+  id: number;
+  user: User;
+  createdAt: string;
+}
+
+/** Addressed by email only — never reveals whether an account exists. */
+export interface OutgoingFriendRequest {
+  id: number;
+  email: string;
+  createdAt: string;
+}
+
+export interface FriendRequests {
+  incoming: IncomingFriendRequest[];
+  outgoing: OutgoingFriendRequest[];
+}
+
 export interface SyncData {
   me: Me;
   users: User[];
@@ -77,6 +95,7 @@ export interface SyncData {
   groups: Group[];
   expenses: Expense[];
   activity: ActivityItem[];
+  friendRequests: FriendRequests;
   syncedAt: string;
 }
 

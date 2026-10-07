@@ -80,13 +80,113 @@ function evaluateExpression(s: string): number | null {
   return pos === s.length ? result : null;
 }
 
+const decimalCache = new Map<string, ',' | '.'>();
+
+/** The decimal separator of a locale (default: the browser's), ',' or '.'. */
+export function localeDecimalSeparator(locale?: string): ',' | '.' {
+  const key = locale ?? '';
+  let sep = decimalCache.get(key);
+  if (sep === undefined) {
+    let found = '.';
+    try {
+      found =
+        new Intl.NumberFormat(locale).formatToParts(1.5).find((p) => p.type === 'decimal')
+          ?.value ?? '.';
+    } catch {
+      // unknown locale tag → fall back to '.'
+    }
+    sep = found === ',' ? ',' : '.';
+    decimalCache.set(key, sep);
+  }
+  return sep;
+}
+
+/** "1", "12", "123" followed by one or more ",ddd" groups (sep = the grouping char). */
+function isGrouped(s: string, sep: ',' | '.'): boolean {
+  const parts = s.split(sep);
+  return (
+    parts.length >= 2 &&
+    /^\d{1,3}$/.test(parts[0]) &&
+    parts.slice(1).every((p) => /^\d{3}$/.test(p))
+  );
+}
+
 /**
- * Parse user input into integer minor units. Accepts plain amounts ("12.50")
- * AND arithmetic ("1240/3", "740+120") — splitting apps live on quick math.
- * Null if invalid, non-positive, or out of range.
+ * One numeric token ("12,50", "1,234.56", "1.234,56") → canonical "1234.56"
+ * form, or null when malformed or AMBIGUOUS. Never guesses: "1,234" means
+ * 1234 to an en-US user and 1.234 to a de-DE user, so a lone separator
+ * followed by exactly three digits resolves by the locale's decimal
+ * separator; a comma followed by 1–2 digits is always decimal (nobody groups
+ * "12,50"), and grouping must form exact 3-digit groups.
  */
-export function parseAmountToCents(input: string, currency: string): number | null {
-  const cleaned = input.replace(/[,\s]/g, '');
+function normalizeNumberToken(token: string, localeDecimal: ',' | '.'): string | null {
+  const hasComma = token.includes(',');
+  const hasDot = token.includes('.');
+  if (hasComma && hasDot) {
+    // Both present: the LAST one is the decimal mark, the other must group.
+    const decimal = token.lastIndexOf(',') > token.lastIndexOf('.') ? ',' : '.';
+    const group = decimal === ',' ? '.' : ',';
+    const at = token.lastIndexOf(decimal);
+    const whole = token.slice(0, at);
+    const frac = token.slice(at + 1);
+    if (!/^\d*$/.test(frac) || !isGrouped(whole, group)) return null;
+    return `${whole.split(group).join('')}.${frac}`;
+  }
+  const sep = hasComma ? ',' : hasDot ? '.' : null;
+  if (sep === null) return /^\d+$/.test(token) ? token : null;
+  const parts = token.split(sep);
+  if (parts.length > 2) {
+    // Several of the same separator can only be grouping ("1,234,567") —
+    // and only when the locale doesn't use that char as its decimal mark.
+    if (sep === localeDecimal || !isGrouped(token, sep)) return null;
+    return parts.join('');
+  }
+  const [whole, frac] = parts;
+  if (!/^\d*$/.test(whole) || !/^\d*$/.test(frac)) return null;
+  if (frac.length >= 3 && sep !== localeDecimal) {
+    // "1,234" in a '.'-decimal locale is grouping — but only as an exact
+    // 3-digit group after 1–3 leading digits; "1234,567" / "1,2345" are
+    // ambiguous, so reject them instead of guessing.
+    return frac.length === 3 && /^\d{1,3}$/.test(whole) ? `${whole}${frac}` : null;
+  }
+  return `${whole}.${frac}`;
+}
+
+/**
+ * User-typed amount text → canonical text ('.' decimal, no grouping, no
+ * spaces), applied to every number in an arithmetic expression. Null when any
+ * number is malformed or ambiguous. Exported for the "= €12.50" preview.
+ */
+export function normalizeAmountText(input: string, locale?: string): string | null {
+  const compact = input.replace(/[\s\u00a0\u202f]/g, '');
+  const localeDecimal = localeDecimalSeparator(locale);
+  let failed = false;
+  const out = compact.replace(/[\d.,]+/g, (token) => {
+    const normalized = normalizeNumberToken(token, localeDecimal);
+    if (normalized === null) failed = true;
+    return normalized ?? '';
+  });
+  return failed ? null : out;
+}
+
+/** True when the text is already a plain canonical amount ("12", "12.50"). */
+export function isCanonicalAmount(input: string): boolean {
+  return /^\d+(\.\d*)?$|^\.\d+$/.test(input.trim());
+}
+
+/**
+ * Parse user input into integer minor units. Accepts plain amounts ("12.50",
+ * "12,50", "1,234.50") AND arithmetic ("1240/3", "740+120") — splitting apps
+ * live on quick math. Null if invalid, ambiguous, non-positive, or out of
+ * range.
+ */
+export function parseAmountToCents(
+  input: string,
+  currency: string,
+  locale?: string,
+): number | null {
+  const cleaned = normalizeAmountText(input, locale);
+  if (cleaned === null) return null;
   const digits = currencyDigits(currency);
   let cents: number;
   if (/[+\-*/()]/.test(cleaned)) {

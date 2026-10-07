@@ -3,6 +3,9 @@ import {
   MAX_CENTS,
   currencyDigits,
   formatMoney,
+  isCanonicalAmount,
+  localeDecimalSeparator,
+  normalizeAmountText,
   parseAmountToCents,
   splitByWeights,
   splitEqual,
@@ -137,12 +140,12 @@ describe('parseAmountToCents', () => {
     expect(parseAmountToCents('12.50', 'USD')).toBe(1250);
     expect(parseAmountToCents('12', 'USD')).toBe(1200);
     expect(parseAmountToCents('0.01', 'USD')).toBe(1);
-    expect(parseAmountToCents('1,250.50', 'USD')).toBe(125050);
+    expect(parseAmountToCents('1,250.50', 'USD', 'en-US')).toBe(125050);
     expect(parseAmountToCents(' 12.5 ', 'USD')).toBe(1250);
     expect(parseAmountToCents('.5', 'USD')).toBe(50);
     // Half-cent inputs round half-up via exact string math, immune to floats
     // (1.005 as a double is 1.00499…95).
-    expect(parseAmountToCents('1.005', 'USD')).toBe(101);
+    expect(parseAmountToCents('1.005', 'USD', 'en-US')).toBe(101);
   });
 
   it('rejects garbage', () => {
@@ -221,7 +224,7 @@ describe('float-boundary safety (0.1 + 0.2 class)', () => {
     expect(parseAmountToCents('0.1+0.2', 'USD')).toBe(30);
     // raw JS: 0.29 * 100 === 28.999999999999996
     expect(parseAmountToCents('0.29', 'USD')).toBe(29);
-    expect(parseAmountToCents('1.005', 'USD')).toBe(101);
+    expect(parseAmountToCents('1.005', 'USD', 'en-US')).toBe(101);
   });
   it('split sums are exact regardless of float intermediates', () => {
     for (const amount of [100, 1000, 99999, 100000001 - 1]) {
@@ -232,5 +235,78 @@ describe('float-boundary safety (0.1 + 0.2 class)', () => {
       ]);
       expect(shares.reduce((s, x) => s + x.owedCents, 0)).toBe(amount);
     }
+  });
+});
+
+describe('locale-aware separators', () => {
+  it('detects the locale decimal separator', () => {
+    expect(localeDecimalSeparator('en-US')).toBe('.');
+    expect(localeDecimalSeparator('de-DE')).toBe(',');
+  });
+
+  it('treats a comma followed by 1–2 digits as decimal in every locale', () => {
+    for (const locale of ['en-US', 'de-DE', 'fr-FR', 'en-IN']) {
+      expect(parseAmountToCents('12,50', 'EUR', locale)).toBe(1250);
+      expect(parseAmountToCents('12,5', 'EUR', locale)).toBe(1250);
+      expect(parseAmountToCents(',5', 'EUR', locale)).toBe(50);
+    }
+  });
+
+  it('never multiplies "12,50" by 100 (regression)', () => {
+    expect(parseAmountToCents('12,50', 'EUR', 'en-US')).not.toBe(125000);
+  });
+
+  it('treats ",ddd" groups as grouping only in a "."-decimal locale', () => {
+    expect(parseAmountToCents('1,234', 'USD', 'en-US')).toBe(123400);
+    expect(normalizeAmountText('1,234,567', 'en-US')).toBe('1234567');
+    expect(parseAmountToCents('12,345', 'USD', 'en-US')).toBe(1234500);
+    // In a ','-decimal locale the same text is a decimal.
+    expect(parseAmountToCents('1,234', 'EUR', 'de-DE')).toBe(123);
+    expect(parseAmountToCents('1,235', 'EUR', 'de-DE')).toBe(124);
+  });
+
+  it('handles both separators: the last one is the decimal mark', () => {
+    expect(parseAmountToCents('1,234.56', 'USD', 'en-US')).toBe(123456);
+    expect(parseAmountToCents('1.234,56', 'EUR', 'en-US')).toBe(123456);
+    expect(parseAmountToCents('1.234,56', 'EUR', 'de-DE')).toBe(123456);
+    expect(parseAmountToCents('1.234.567,8', 'EUR', 'de-DE')).toBeNull(); // over cap
+    expect(normalizeAmountText('1.234.567,8', 'de-DE')).toBe('1234567.8');
+  });
+
+  it('treats ".ddd" as grouping in a ","-decimal locale', () => {
+    expect(parseAmountToCents('1.234', 'EUR', 'de-DE')).toBe(123400);
+    expect(parseAmountToCents('1.234.567', 'EUR', 'de-DE')).toBeNull(); // over cap
+    expect(normalizeAmountText('1.234.567', 'de-DE')).toBe('1234567');
+    expect(parseAmountToCents('12.50', 'EUR', 'de-DE')).toBe(1250);
+  });
+
+  it('rejects ambiguous or malformed grouping instead of guessing', () => {
+    expect(parseAmountToCents('1234,567', 'USD', 'en-US')).toBeNull();
+    expect(parseAmountToCents('1,2345', 'USD', 'en-US')).toBeNull();
+    expect(parseAmountToCents('1,23,4', 'USD', 'en-US')).toBeNull();
+    expect(parseAmountToCents('1,23.45', 'USD', 'en-US')).toBeNull();
+    expect(parseAmountToCents('12,50,1', 'EUR', 'de-DE')).toBeNull();
+    expect(parseAmountToCents('1.2345', 'EUR', 'de-DE')).toBeNull();
+    expect(parseAmountToCents('1,2.3', 'USD', 'en-US')).toBeNull();
+  });
+
+  it('normalizes each number inside an expression', () => {
+    expect(parseAmountToCents('12,50+2,50', 'EUR', 'en-US')).toBe(1500);
+    expect(parseAmountToCents('1.000,50/2', 'EUR', 'de-DE')).toBe(50025);
+    expect(parseAmountToCents('1,5 * 2', 'EUR', 'de-DE')).toBe(300);
+  });
+
+  it('strips spaces including no-break spaces used as grouping', () => {
+    expect(parseAmountToCents('1 234,50', 'EUR', 'fr-FR')).toBe(123450);
+    expect(parseAmountToCents('1\u202f234,50', 'EUR', 'fr-FR')).toBe(123450);
+  });
+
+  it('flags non-canonical input for the parsed preview', () => {
+    expect(isCanonicalAmount('12.50')).toBe(true);
+    expect(isCanonicalAmount('12')).toBe(true);
+    expect(isCanonicalAmount('.5')).toBe(true);
+    expect(isCanonicalAmount('12,50')).toBe(false);
+    expect(isCanonicalAmount('1,234')).toBe(false);
+    expect(isCanonicalAmount('10/2')).toBe(false);
   });
 });

@@ -2,7 +2,7 @@ import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { getCookie } from 'hono/cookie';
-import { APP_ORIGIN } from './auth';
+import { APP_ORIGIN, COOKIE_NAME, hasLiveSession } from './auth';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -29,8 +29,24 @@ interface Bucket {
   windowStart: number;
 }
 const WINDOW_MS = 60_000;
+const MAX_BUCKETS = 50_000;
+
+/**
+ * Behind a reverse proxy every socket address is the proxy's, so all clients
+ * would share one bucket. With TRUST_PROXY set, take the RIGHTMOST
+ * X-Forwarded-For entry — the one our own proxy appended; anything left of it
+ * is client-controlled — then X-Real-IP, then the socket.
+ */
+const TRUST_PROXY = /^(1|true|yes|on)$/i.test(process.env.TRUST_PROXY ?? '');
 
 function ipKey(c: Context): string {
+  if (TRUST_PROXY) {
+    const xff = c.req.header('x-forwarded-for');
+    const last = xff?.split(',').pop()?.trim();
+    if (last) return `ip:${last}`;
+    const real = c.req.header('x-real-ip')?.trim();
+    if (real) return `ip:${real}`;
+  }
   try {
     return `ip:${getConnInfo(c).remote.address ?? 'unknown'}`;
   } catch {
@@ -39,10 +55,10 @@ function ipKey(c: Context): string {
 }
 
 function clientKey(c: Context): string {
-  // Prefer the session cookie (stable per user) — but only when it has the
-  // real token format; arbitrary junk cookies must not mint fresh buckets.
-  const cookie = getCookie(c, 'splitup_session');
-  if (cookie && /^[0-9a-f]{64}$/.test(cookie)) return `s:${cookie.slice(0, 16)}`;
+  // Prefer the session (stable per user) — but only for a cookie that maps to
+  // a live session row; junk or expired cookies must not mint fresh buckets.
+  const cookie = getCookie(c, COOKIE_NAME);
+  if (cookie && hasLiveSession(cookie)) return `s:${cookie.slice(0, 16)}`;
   return ipKey(c);
 }
 
@@ -50,19 +66,29 @@ function clientKey(c: Context): string {
  * Fixed-window in-memory rate limiter; fine for a single-process deployment.
  * 'ip' mode keys strictly by remote address — use it for pre-session routes
  * (auth), where a cookie-derived key would be attacker-chosen.
+ *
+ * Buckets are re-inserted whenever their window restarts, so the Map's
+ * insertion order is windowStart order: expired buckets are always at the
+ * front and eviction is amortized O(1). A hard cap drops the oldest bucket.
  */
-export function rateLimit(maxPerMinute: number, mode: 'session' | 'ip' = 'session') {
+export function rateLimit(
+  maxPerWindow: number,
+  mode: 'session' | 'ip' = 'session',
+  windowMs = WINDOW_MS,
+) {
   const buckets = new Map<string, Bucket>();
   return async (c: Context, next: Next) => {
     const now = Date.now();
-    if (buckets.size > 10_000) {
-      for (const [k, b] of buckets) if (now - b.windowStart > WINDOW_MS) buckets.delete(k);
+    for (const [k, b] of buckets) {
+      if (now - b.windowStart <= windowMs && buckets.size < MAX_BUCKETS) break;
+      buckets.delete(k);
     }
     const key = mode === 'ip' ? ipKey(c) : clientKey(c);
     const bucket = buckets.get(key);
-    if (!bucket || now - bucket.windowStart > WINDOW_MS) {
+    if (!bucket || now - bucket.windowStart > windowMs) {
+      buckets.delete(key);
       buckets.set(key, { count: 1, windowStart: now });
-    } else if (++bucket.count > maxPerMinute) {
+    } else if (++bucket.count > maxPerWindow) {
       throw new HTTPException(429, { message: 'too many requests' });
     }
     await next();

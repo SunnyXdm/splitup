@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildGroupCsv } from './export-csv';
+import { buildGroupCsv, neutralizeFormula } from './export-csv';
 import type { SyncData } from './types';
 
 const sync = {
@@ -42,5 +42,22 @@ describe('buildGroupCsv', () => {
     expect(lines[0]).toBe('Date,Description,Category,Cost,Currency,Alice,"Bob ""B"""');
     expect(lines[1]).toBe('2026-07-21,"Chai, snacks",Food & drink,300.00,INR,150.00,-150.00');
     expect(lines[2]).toBe('2026-07-22,Payment,Payment,150.00,INR,-150.00,150.00');
+  });
+});
+
+describe('neutralizeFormula', () => {
+  it('prefixes formula-like text cells', () => {
+    expect(neutralizeFormula('=HYPERLINK("x")')).toBe(`'=HYPERLINK("x")`);
+    expect(neutralizeFormula('+1+2')).toBe(`'+1+2`);
+    expect(neutralizeFormula('-cmd')).toBe(`'-cmd`);
+    expect(neutralizeFormula('@SUM(A1)')).toBe(`'@SUM(A1)`);
+    expect(neutralizeFormula('\tx')).toBe(`'\tx`);
+    expect(neutralizeFormula('\rx')).toBe(`'\rx`);
+  });
+
+  it('leaves plain numbers and ordinary text alone', () => {
+    expect(neutralizeFormula('-12.50')).toBe('-12.50');
+    expect(neutralizeFormula('12.50')).toBe('12.50');
+    expect(neutralizeFormula('Dinner')).toBe('Dinner');
   });
 });

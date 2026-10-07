@@ -115,6 +115,7 @@ docker run -d -p 8790:8790 \
 | `DB_PATH` | `server/data/splitup.db` | SQLite file, created on first run |
 | `PORT` | `8790` | API/server port |
 | `NODE_ENV` | – | `production` enables Secure cookies, CSP, and static serving of `web/dist` |
+| `TRUST_PROXY` | – | `1`/`true` when behind a reverse proxy: rate limits key on the rightmost `X-Forwarded-For` entry (then `X-Real-IP`) instead of the proxy's socket address. Leave unset when directly exposed, or clients can spoof their IP |
 
 ## Security
 

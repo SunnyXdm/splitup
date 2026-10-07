@@ -16,6 +16,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
+import { errorMessage } from '@/lib/api';
 import { groupBalances } from '@/lib/balances';
 import {
   useAddGroupMember,
@@ -80,7 +81,7 @@ function SheetBody({ groupId }: { groupId: number }) {
       { groupId, userId },
       {
         onSuccess: () => toast.success(`${name} added to ${group?.name ?? 'the group'}`),
-        onError: (err) => toast.error(err.message),
+        onError: (err) => toast.error(errorMessage(err)),
         onSettled: () => setPendingId(null),
       },
     );
@@ -92,7 +93,7 @@ function SheetBody({ groupId }: { groupId: number }) {
       { groupId, userId: removeTarget.id },
       {
         onSuccess: () => toast.success(`${removeTarget.name} removed`),
-        onError: (err) => toast.error(err.message),
+        onError: (err) => toast.error(errorMessage(err)),
         onSettled: () => setRemoveTarget(null),
       },
     );
@@ -108,7 +109,7 @@ function SheetBody({ groupId }: { groupId: number }) {
           toast.message('Copy this invite link', { description: url });
         }
       },
-      onError: (err) => toast.error(err.message),
+      onError: (err) => toast.error(errorMessage(err)),
     });
   };
 

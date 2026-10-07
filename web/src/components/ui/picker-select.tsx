@@ -23,6 +23,10 @@ interface PickerSelectProps {
   id?: string
   /** Trigger styling override (e.g. the compact in-input variant). */
   className?: string
+  /** id of a visible label element (for triggers without a <label for>). */
+  "aria-labelledby"?: string
+  /** Accessible name when there is no visible label at all. */
+  "aria-label"?: string
 }
 
 /**
@@ -41,9 +45,16 @@ function PickerSelect({
   disabled = false,
   id,
   className,
+  "aria-labelledby": labelledBy,
+  "aria-label": ariaLabel,
 }: PickerSelectProps) {
   const [open, setOpen] = React.useState(false)
   const selected = options.find((o) => o.value === value)
+  const valueId = React.useId()
+  const nameId = React.useId()
+  // Name = the label PLUS the current value ("Paid by, You"), so a screen
+  // reader announces both; aria-labelledby alone would drop the value.
+  const nameRef = labelledBy ?? (ariaLabel ? nameId : undefined)
 
   return (
     <>
@@ -53,13 +64,19 @@ function PickerSelect({
         disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
+        aria-labelledby={nameRef ? `${nameRef} ${valueId}` : undefined}
         onClick={() => setOpen(true)}
         className={cn(
           "flex h-11 w-full items-center justify-between gap-2 rounded-full border border-input bg-transparent px-4 text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50",
           className
         )}
       >
-        <span className={cn("truncate", !selected && "text-muted-foreground")}>
+        {ariaLabel && !labelledBy ? (
+          <span id={nameId} className="sr-only">
+            {ariaLabel}
+          </span>
+        ) : null}
+        <span id={valueId} className={cn("truncate", !selected && "text-muted-foreground")}>
           {selected ? selected.label : placeholder}
         </span>
         <ChevronDownIcon
@@ -85,6 +102,7 @@ function PickerSelect({
                     key={option.value}
                     type="button"
                     disabled={option.disabled}
+                    aria-pressed={isSelected}
                     onClick={() => {
                       onValueChange(option.value)
                       setOpen(false)

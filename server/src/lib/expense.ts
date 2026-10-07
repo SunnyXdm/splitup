@@ -89,7 +89,8 @@ export function editableExpenseOr404(me: UserRow, id: number): ExpenseRow {
     .get(id);
   if (!row) throw NOT_FOUND();
   if (row.group_id !== null) {
-    if (!isMember(row.group_id, me.id)) throw NOT_FOUND();
+    // Also 404s for soft-deleted groups: their ledger is frozen.
+    memberGroupOr404(row.group_id, me.id);
   } else if (!sharesOf(row.id).some((s) => s.user_id === me.id)) {
     throw NOT_FOUND();
   }
@@ -130,6 +131,65 @@ export function checkExpenseInput(
     throw new HTTPException(400, { message: 'you can only split with a friend' });
   }
   return null;
+}
+
+/** A user's net (paid − owed) across a group's live expenses in one currency. */
+export function groupNet(groupId: number, userId: number, currency: string): number {
+  return db
+    .prepare<[number, number, string], { net: number }>(
+      `SELECT COALESCE(SUM(s.paid_cents - s.owed_cents), 0) AS net
+       FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
+       WHERE e.group_id = ? AND e.deleted_at IS NULL AND s.user_id = ? AND e.currency = ?`,
+    )
+    .get(groupId, userId, currency)!.net;
+}
+
+type ShareLike = { userId: number; paidCents: number; owedCents: number };
+
+export const shareLike = (s: ShareRow): ShareLike => ({
+  userId: s.user_id,
+  paidCents: s.paid_cents,
+  owedCents: s.owed_cents,
+});
+
+const DEPARTED = () => new HTTPException(409, { message: 'departed member' });
+
+/**
+ * Departed members can't see the group anymore, so nobody may silently move
+ * their group net: a change from `before` to `after` shares of one group
+ * expense (empty `before` = create, empty `after` = delete) is rejected when
+ * it alters the per-currency net of any share user who is no longer a member.
+ * With `exact` (edits), a departed user's paid/owed must stay identical.
+ */
+export function assertDepartedUnchanged(
+  groupId: number,
+  before: { currency: string; shares: ShareLike[] } | null,
+  after: { currency: string; shares: ShareLike[] } | null,
+  exact = false,
+): void {
+  const members = new Set(groupMemberIds(groupId));
+  const delta = new Map<string, number>();
+  const bump = (cur: string, s: ShareLike, sign: 1 | -1) => {
+    if (members.has(s.userId)) return;
+    const key = `${s.userId}:${cur}`;
+    delta.set(key, (delta.get(key) ?? 0) + sign * (s.paidCents - s.owedCents));
+  };
+  for (const s of before?.shares ?? []) bump(before!.currency, s, -1);
+  for (const s of after?.shares ?? []) bump(after!.currency, s, 1);
+  for (const d of delta.values()) if (d !== 0) throw DEPARTED();
+  if (exact && before && after) {
+    const afterBy = new Map(after.shares.map((s) => [s.userId, s]));
+    for (const b of before.shares) {
+      if (members.has(b.userId)) continue;
+      const a = afterBy.get(b.userId);
+      const same = a
+        ? a.paidCents === b.paidCents && a.owedCents === b.owedCents
+        : b.paidCents === 0 && b.owedCents === 0;
+      if (!same || (before.currency !== after.currency && (b.paidCents || b.owedCents))) {
+        throw DEPARTED();
+      }
+    }
+  }
 }
 
 export function userName(id: number): string {

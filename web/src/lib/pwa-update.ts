@@ -22,8 +22,14 @@ export function setupPwaUpdates(): void {
     },
     onRegisteredSW(_url, registration) {
       // Long-lived PWA sessions: check for a new build every hour.
+      // Skipped offline, and failures swallowed: update() rejects when the
+      // network is down, which would otherwise surface as an unhandled
+      // rejection every hour on a plane.
       if (registration) {
-        setInterval(() => void registration.update(), HOUR_MS);
+        setInterval(() => {
+          if (!navigator.onLine) return;
+          registration.update().catch(() => {});
+        }, HOUR_MS);
       }
     },
   });

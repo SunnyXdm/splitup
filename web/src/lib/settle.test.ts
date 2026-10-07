@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { friendBalance, groupBalances, myTotalBalance, suggestSettlements } from './balances';
-import { apportionSettle, pairConstituents, settlementWatermark, type SettleRow } from './settle';
+import {
+  apportionSettle,
+  currentSuggestion,
+  pairConstituents,
+  settlementWatermark,
+  type SettleRow,
+} from './settle';
 import type { Expense, ExpenseShare, Group, SyncData } from './types';
 
 /** Tiny deterministic LCG for property-style loops (no unseeded randomness). */
@@ -118,16 +124,17 @@ describe('pairConstituents', () => {
   });
 
   it('only reports edges routed to the pair, not raw pairwise debts', () => {
-    // 2 owes the group pool, but greedy routes 2's debt to 3 (larger creditor),
-    // so the me<->2 constituent list must be empty for that group.
+    // Raw pairwise, 2 owes only 3 and I'm owed by 3 — but the group routes on
+    // NETS (1:+100, 2:−900, 3:+800), so the sweep sends 100 of 2's debt to me.
+    // The constituent must follow the routed edge, not the raw ledger.
     const sync = makeSync({
       groups: [makeGroup(10, [1, 2, 3])],
       expenses: [debt(10, 2, 3, 900), debt(10, 3, 1, 100)],
     });
     const routed = suggestSettlements(groupBalances(sync, 10));
     expect(routed).toEqual([
-      { fromUserId: 2, toUserId: 3, cents: 800, currency: 'USD' },
       { fromUserId: 2, toUserId: 1, cents: 100, currency: 'USD' },
+      { fromUserId: 2, toUserId: 3, cents: 800, currency: 'USD' },
     ]);
     expect(pairConstituents(sync, 2, 'USD')).toEqual([{ scope: 10, cents: 100 }]);
   });
@@ -481,5 +488,32 @@ describe('settle end-to-end', () => {
       expect(myTotalBalance(sync)).toEqual([]);
       for (const friend of [2, 3, 4]) expect(balanceWith(sync, friend)).toBe(0);
     }
+  });
+});
+
+describe('settlementWatermark ignores optimistic rows', () => {
+  it('a temp (negative id) row changes neither count nor max updatedAt', () => {
+    const real = debt(10, 2, 1, 500);
+    const sync = makeSync({ groups: [makeGroup(10, [1, 2])], expenses: [real] });
+    const temp = { ...debt(10, 1, 2, 100), id: -42, updatedAt: '2099-01-01T00:00:00Z' };
+    const withTemp = makeSync({ groups: [makeGroup(10, [1, 2])], expenses: [real, temp] });
+    expect(settlementWatermark(withTemp, 2)).toEqual(settlementWatermark(sync, 2));
+  });
+});
+
+describe('currentSuggestion', () => {
+  it('reads the routed group edge for the pair, with direction', () => {
+    const sync = makeSync({
+      groups: [makeGroup(10, [1, 2, 3])],
+      expenses: [debt(10, 2, 1, 700), debt(10, 1, 3, 200)],
+    });
+    expect(currentSuggestion(sync, 10, 2, 'USD')).toEqual({ cents: 500, direction: 'they_paid' });
+    expect(currentSuggestion(sync, 10, 3, 'USD')).toBeNull();
+    expect(currentSuggestion(sync, 10, 2, 'EUR')).toBeNull();
+  });
+
+  it('reads the friend balance in friend mode', () => {
+    const sync = makeSync({ expenses: [debt(null as never, 1, 2, 300)] });
+    expect(currentSuggestion(sync, null, 2, 'USD')).toEqual({ cents: 300, direction: 'i_paid' });
   });
 });

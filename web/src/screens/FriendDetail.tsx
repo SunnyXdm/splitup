@@ -164,12 +164,11 @@ export default function FriendDetail() {
         )}
       </section>
 
+      {/* editingExpense is kept after close (clearing it flipped the sheet to
+          "Add expense" mid-animation); "Add expense" resets it before opening. */}
       <ExpenseForm
         open={expenseOpen}
-        onOpenChange={(o) => {
-          setExpenseOpen(o);
-          if (!o) setEditingExpense(undefined);
-        }}
+        onOpenChange={setExpenseOpen}
         groupId={editingExpense ? editingExpense.groupId : null}
         expense={editingExpense}
         friendId={friend.id}

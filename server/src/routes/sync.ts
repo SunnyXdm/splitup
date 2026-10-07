@@ -5,6 +5,7 @@ import {
   nowIso,
   type ActivityRow,
   type ExpenseRow,
+  type FriendRequestRow,
   type GroupRow,
   type ShareRow,
   type UserRow,
@@ -60,7 +61,11 @@ app.get('/', (c) => {
   const memberRows = db
     .prepare<[number], { group_id: number; user_id: number }>(
       `SELECT gm.group_id, gm.user_id FROM group_members gm
-       WHERE gm.group_id IN (SELECT group_id FROM group_members WHERE user_id = ?)
+       WHERE gm.group_id IN (
+         SELECT mine.group_id FROM group_members mine
+         JOIN groups g ON g.id = mine.group_id AND g.deleted_at IS NULL
+         WHERE mine.user_id = ?
+       )
        ORDER BY gm.joined_at, gm.user_id`,
     )
     .all(me.id);
@@ -104,15 +109,55 @@ app.get('/', (c) => {
 
   const activityRows = db
     .prepare<[number, number, number], ActivityRow>(
+      // Deleted groups' activity is dropped like their expenses and members;
+      // history from groups I merely left still shows (it's my own past).
       `SELECT a.* FROM activity a
-       WHERE a.group_id IN (SELECT group_id FROM group_members WHERE user_id = ?)
-          OR a.actor_id = ?
-          OR (a.expense_id IS NOT NULL AND EXISTS (
-            SELECT 1 FROM expense_shares s WHERE s.expense_id = a.expense_id AND s.user_id = ?
-          ))
+       WHERE (a.group_id IS NULL OR NOT EXISTS (
+           SELECT 1 FROM groups g WHERE g.id = a.group_id AND g.deleted_at IS NOT NULL
+         ))
+         AND (
+           a.group_id IN (SELECT group_id FROM group_members WHERE user_id = ?)
+           OR a.actor_id = ?
+           OR (a.expense_id IS NOT NULL AND EXISTS (
+             SELECT 1 FROM expense_shares s WHERE s.expense_id = a.expense_id AND s.user_id = ?
+           ))
+         )
        ORDER BY a.id DESC LIMIT 200`,
     )
     .all(me.id, me.id, me.id);
+
+  // Pending friend requests, matched to me by email at query time (so one
+  // sent before I signed up shows up now). Incoming ones from people I'm
+  // already friends with (e.g. via a group join) are moot and hidden.
+  const myEmail = me.email?.toLowerCase() ?? null;
+  const incoming =
+    myEmail === null
+      ? []
+      : db
+          .prepare<[string, number, number], UserRow & { req_id: number; req_created_at: string }>(
+            `SELECT u.*, r.id AS req_id, r.created_at AS req_created_at
+             FROM friend_requests r JOIN users u ON u.id = r.from_id
+             WHERE r.to_email = ? AND r.from_id != ? AND NOT EXISTS (
+               SELECT 1 FROM friendships f WHERE f.user_id = ? AND f.friend_id = r.from_id
+             )
+             ORDER BY r.created_at DESC, r.id DESC`,
+          )
+          .all(myEmail, me.id, me.id)
+          .map((r) => ({ id: r.req_id, user: toUser(r), createdAt: r.req_created_at }));
+  // Outgoing is reported verbatim — only what I typed, never whether it maps
+  // to an account. Emails of people already my friends are hidden; their
+  // emails are in my payload anyway, so that reveals nothing new.
+  const outgoing = db
+    .prepare<[number, number], FriendRequestRow>(
+      `SELECT r.* FROM friend_requests r
+       WHERE r.from_id = ? AND NOT EXISTS (
+         SELECT 1 FROM friendships f JOIN users u ON u.id = f.friend_id
+         WHERE f.user_id = ? AND lower(u.email) = r.to_email
+       )
+       ORDER BY r.created_at DESC, r.id DESC`,
+    )
+    .all(me.id, me.id)
+    .map((r) => ({ id: r.id, email: r.to_email, createdAt: r.created_at }));
 
   const payload: SyncData = {
     me: toMe(me),
@@ -121,6 +166,7 @@ app.get('/', (c) => {
     groups: groupRows.map((g) => toGroup(g, membersByGroup.get(g.id) ?? [])),
     expenses: expenseRows.map((e) => toExpense(e, sharesByExpense.get(e.id) ?? [])),
     activity: activityRows.map(toActivity),
+    friendRequests: { incoming, outgoing },
     syncedAt: nowIso(),
   };
   return c.json(payload);

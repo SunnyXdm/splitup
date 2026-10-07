@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { Minus, Plus } from 'lucide-react';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { Button } from '@/components/ui/button';

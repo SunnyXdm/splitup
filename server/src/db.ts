@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
 const DB_PATH =
@@ -97,11 +97,40 @@ CREATE TABLE IF NOT EXISTS activity (
 CREATE INDEX IF NOT EXISTS idx_activity_created ON activity(created_at);
 `);
 
+// Friend requests are addressed by email, not user id, so requests to
+// unknown emails are stored too (and turn into incoming ones if that person
+// signs up) — the sender can't tell whether an account exists. A pre-release
+// id-keyed shape of this table never shipped; replace it if found.
+const requestCols = db.prepare('PRAGMA table_info(friend_requests)').all() as { name: string }[];
+if (requestCols.length > 0 && !requestCols.some((c) => c.name === 'to_email')) {
+  db.exec('DROP TABLE friend_requests');
+}
+db.exec(`
+CREATE TABLE IF NOT EXISTS friend_requests (
+  id INTEGER PRIMARY KEY,
+  from_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  to_email TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (from_id, to_email)
+);
+CREATE INDEX IF NOT EXISTS idx_friend_requests_to ON friend_requests(to_email);
+`);
+
 // Older databases predate soft-deleted groups; add the column in place.
 const groupCols = db.prepare("PRAGMA table_info(groups)").all() as { name: string }[];
 if (!groupCols.some((c) => c.name === 'deleted_at')) {
   db.exec('ALTER TABLE groups ADD COLUMN deleted_at TEXT');
 }
+
+// Idempotency keys for create retries (offline queue, flaky networks): one
+// key per creator, so a replayed POST returns the original row.
+const expenseCols = db.prepare("PRAGMA table_info(expenses)").all() as { name: string }[];
+if (!expenseCols.some((c) => c.name === 'client_key')) {
+  db.exec('ALTER TABLE expenses ADD COLUMN client_key TEXT');
+}
+db.exec(
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_client_key ON expenses(created_by, client_key) WHERE client_key IS NOT NULL',
+);
 
 export interface UserRow {
   id: number;
@@ -135,6 +164,7 @@ export interface ExpenseRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  client_key: string | null;
 }
 export interface ShareRow {
   expense_id: number;
@@ -152,6 +182,13 @@ export interface ActivityRow {
   created_at: string;
 }
 
+export interface FriendRequestRow {
+  id: number;
+  from_id: number;
+  to_email: string;
+  created_at: string;
+}
+
 export const nowIso = () => new Date().toISOString();
 
 // SQLite only folds the WAL back into the main file opportunistically, so
@@ -164,11 +201,18 @@ export function checkpoint(): void {
 const BACKUP_DIR = path.join(path.dirname(DB_PATH), 'backups');
 const BACKUP_KEEP = 7;
 
-/** Consistent daily snapshot (online backup API), keeping the newest 7. */
+/**
+ * Consistent daily snapshot (online backup API), keeping the newest 7. Written
+ * to a .tmp file and renamed into place, so a crash or shutdown mid-backup
+ * never leaves a truncated snapshot under a real backup name.
+ */
 export async function backupDaily(): Promise<void> {
   mkdirSync(BACKUP_DIR, { recursive: true });
   const file = path.join(BACKUP_DIR, `splitup-${nowIso().slice(0, 10)}.db`);
-  await db.backup(file);
+  const tmp = `${file}.tmp`;
+  rmSync(tmp, { force: true });
+  await db.backup(tmp);
+  renameSync(tmp, file);
   const old = readdirSync(BACKUP_DIR)
     .filter((f) => /^splitup-\d{4}-\d{2}-\d{2}\.db$/.test(f))
     .sort()

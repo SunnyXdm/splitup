@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import { toast } from 'sonner';
 import {
   BellRing,
@@ -56,10 +56,10 @@ import AddMembersSheet from '@/components/group/AddMembersSheet';
 import ExpenseHistory from '@/components/group/ExpenseHistory';
 import GroupFormFields, { type GroupFormValues } from '@/components/group/GroupFormFields';
 import { useOnline } from '@/components/layout/OfflineBanner';
-import { ApiError } from '@/lib/api';
+import { ApiError, errorMessage, isDepartedMember } from '@/lib/api';
 import { buildGroupCsv, downloadCsv } from '@/lib/export-csv';
 import { reminderText, sendReminder } from '@/lib/remind';
-import { groupBalances, suggestSettlements } from '@/lib/balances';
+import { groupBalances, groupExpenses, groupSettlements } from '@/lib/balances';
 import { formatMoney } from '@/lib/money';
 import {
   useDeleteGroup,
@@ -68,6 +68,7 @@ import {
   useUpdateGroup,
 } from '@/lib/queries';
 import type { Expense, User } from '@/lib/types';
+import { useOverlayNavigate } from '@/lib/use-history-dismiss';
 
 interface SettlePrefill {
   toUserId?: number;
@@ -79,7 +80,8 @@ interface SettlePrefill {
 export default function GroupDetail() {
   const { id } = useParams();
   const groupId = Number(id);
-  const navigate = useNavigate();
+  // Leave/delete navigate away while their confirm dialog is still open.
+  const navigate = useOverlayNavigate();
   const online = useOnline();
   const { data: sync, isFetching: syncFetching } = useSyncData();
 
@@ -129,9 +131,9 @@ export default function GroupDetail() {
     .map((uid) => usersById.get(uid))
     .filter((u): u is User => u !== undefined);
   const nameOf = (uid: number) => (uid === meId ? 'You' : (usersById.get(uid)?.name ?? 'Someone'));
-  const expenses = sync.expenses.filter((e) => e.groupId === group.id);
+  const expenses = groupExpenses(sync, group.id);
   const balances = groupBalances(sync, group.id);
-  const transfers = suggestSettlements(balances);
+  const transfers = groupSettlements(sync, group.id);
 
   const openEdit = () =>
     setEditValues({ name: group.name, emoji: group.emoji, currency: group.currency });
@@ -148,7 +150,7 @@ export default function GroupDetail() {
           toast.success('Group updated');
           setEditValues(null);
         },
-        onError: (err) => toast.error(err.message),
+        onError: (err) => toast.error(errorMessage(err)),
       },
     );
   };
@@ -162,10 +164,10 @@ export default function GroupDetail() {
       },
       onError: (err) => {
         setLeaveOpen(false);
-        if (err instanceof ApiError && err.status === 409) {
+        if (err instanceof ApiError && err.status === 409 && !isDepartedMember(err)) {
           toast.error('You have an unsettled balance in this group — settle up before leaving.');
         } else {
-          toast.error(err.message);
+          toast.error(errorMessage(err));
         }
       },
     });
@@ -180,10 +182,10 @@ export default function GroupDetail() {
       },
       onError: (err) => {
         setDeleteOpen(false);
-        if (err instanceof ApiError && err.status === 409) {
+        if (err instanceof ApiError && err.status === 409 && !isDepartedMember(err)) {
           toast.error('The group has unsettled balances — settle everyone up before deleting it.');
         } else {
-          toast.error(err.message);
+          toast.error(errorMessage(err));
         }
       },
     });
@@ -303,13 +305,24 @@ export default function GroupDetail() {
                         <span className="text-sm text-muted-foreground">settled up</span>
                       ) : (
                         nets.map((b) => (
-                          <MoneyText
-                            key={b.currency}
-                            signed
-                            cents={b.netCents}
-                            currency={b.currency}
-                            className="text-sm font-medium"
-                          />
+                          // Direction in words, not just color.
+                          <span key={b.currency} className="flex flex-col items-end">
+                            <span className="text-[11px] text-muted-foreground">
+                              {u.id === meId
+                                ? b.netCents > 0
+                                  ? 'you get back'
+                                  : 'you owe'
+                                : b.netCents > 0
+                                  ? 'gets back'
+                                  : 'owes'}
+                            </span>
+                            <MoneyText
+                              signed
+                              cents={b.netCents}
+                              currency={b.currency}
+                              className="text-sm font-medium"
+                            />
+                          </span>
                         ))
                       )}
                     </span>
@@ -497,12 +510,11 @@ export default function GroupDetail() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* editingExpense is kept after close: clearing it here flipped the
+          sheet to "Add expense" during its close animation. Every open sets it. */}
       <ExpenseForm
         open={expenseOpen}
-        onOpenChange={(o) => {
-          setExpenseOpen(o);
-          if (!o) setEditingExpense(undefined);
-        }}
+        onOpenChange={setExpenseOpen}
         groupId={group.id}
         expense={editingExpense}
       />

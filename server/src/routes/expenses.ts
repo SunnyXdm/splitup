@@ -2,9 +2,10 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { requireAuth, type AppEnv } from '../auth';
 import { db, nowIso } from '../db';
-import { expenseBody, idParam } from '../validate';
+import { expenseCreateBody, expensePatchBody, idParam } from '../validate';
 import { readJson } from '../lib/wire';
 import {
+  assertDepartedUnchanged,
   checkExpenseInput,
   editableExpenseOr404,
   expenseSummary,
@@ -12,6 +13,7 @@ import {
   insertShares,
   paymentSummary,
   recordActivity,
+  shareLike,
   sharesOf,
 } from '../lib/expense';
 
@@ -20,16 +22,29 @@ app.use(requireAuth);
 
 app.post('/', async (c) => {
   const me = c.get('user');
-  const body = expenseBody.parse(await readJson(c));
+  const body = expenseCreateBody.parse(await readJson(c));
+  // Idempotent retry: the original insert already happened → return it as-is,
+  // before re-validating (membership may have changed since the first try).
+  if (body.clientKey !== undefined) {
+    const prior = db
+      .prepare<[number, string], { id: number }>(
+        'SELECT id FROM expenses WHERE created_by = ? AND client_key = ?',
+      )
+      .get(me.id, body.clientKey);
+    if (prior) return c.json(expenseWire(prior.id));
+  }
   checkExpenseInput(me, body);
+  if (body.groupId !== null) {
+    assertDepartedUnchanged(body.groupId, null, { currency: body.currency, shares: body.shares });
+  }
   const description = body.isPayment ? 'Payment' : body.description;
   const now = nowIso();
   const expense = db.transaction(() => {
     const info = db
       .prepare(
         `INSERT INTO expenses (group_id, description, amount_cents, currency, date, category, notes,
-           is_payment, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           is_payment, created_by, created_at, updated_at, client_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         body.groupId,
@@ -43,6 +58,7 @@ app.post('/', async (c) => {
         me.id,
         now,
         now,
+        body.clientKey ?? null,
       );
     const id = Number(info.lastInsertRowid);
     insertShares(id, body.shares);
@@ -59,8 +75,13 @@ app.post('/', async (c) => {
 app.patch('/:id', async (c) => {
   const me = c.get('user');
   const id = idParam.parse(c.req.param('id'));
+  const body = expensePatchBody.parse(await readJson(c));
+  // Loaded after the body await so every check below and the write run in one
+  // synchronous stretch — nothing can change the row in between.
   const existing = editableExpenseOr404(me, id);
-  const body = expenseBody.parse(await readJson(c));
+  if (body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt !== existing.updated_at) {
+    throw new HTTPException(409, { message: 'conflict' });
+  }
   // An edit may not move an expense between scopes or turn it into/out of a
   // payment: authorization and settled states are scoped to where it lives.
   if (body.groupId !== existing.group_id) {
@@ -69,29 +90,49 @@ app.patch('/:id', async (c) => {
   if (body.isPayment !== (existing.is_payment === 1)) {
     throw new HTTPException(400, { message: 'an expense cannot become a payment' });
   }
+  const oldShares = sharesOf(id);
+  if (existing.group_id === null) {
+    // A 1:1 expense stays between the same two people; swapping the other
+    // party would move a debt into a pair that never agreed to it.
+    const oldIds = new Set(oldShares.map((s) => s.user_id));
+    if (!body.shares.every((s) => oldIds.has(s.userId))) {
+      throw new HTTPException(400, { message: 'a non-group expense must keep its two people' });
+    }
+  }
   // Participants who have since left the group stay editable (grandfathered);
   // new participants must be current members.
-  const grandfathered = new Set(sharesOf(id).map((s) => s.user_id));
+  const grandfathered = new Set(oldShares.map((s) => s.user_id));
   checkExpenseInput(me, body, grandfathered);
+  if (existing.group_id !== null) {
+    assertDepartedUnchanged(
+      existing.group_id,
+      { currency: existing.currency, shares: oldShares.map(shareLike) },
+      { currency: body.currency, shares: body.shares },
+      true,
+    );
+  }
   const description = body.isPayment ? 'Payment' : body.description;
   const now = nowIso();
   const expense = db.transaction(() => {
-    db.prepare(
-      `UPDATE expenses SET group_id = ?, description = ?, amount_cents = ?, currency = ?, date = ?,
-         category = ?, notes = ?, is_payment = ?, updated_at = ?
-       WHERE id = ?`,
-    ).run(
-      body.groupId,
-      description,
-      body.amountCents,
-      body.currency,
-      body.date,
-      body.category,
-      body.notes || null,
-      body.isPayment ? 1 : 0,
-      now,
-      id,
-    );
+    const { changes } = db
+      .prepare(
+        `UPDATE expenses SET group_id = ?, description = ?, amount_cents = ?, currency = ?, date = ?,
+           category = ?, notes = ?, is_payment = ?, updated_at = ?
+         WHERE id = ? AND deleted_at IS NULL`,
+      )
+      .run(
+        body.groupId,
+        description,
+        body.amountCents,
+        body.currency,
+        body.date,
+        body.category,
+        body.notes || null,
+        body.isPayment ? 1 : 0,
+        now,
+        id,
+      );
+    if (changes === 0) throw new HTTPException(404, { message: 'not found' });
     db.prepare('DELETE FROM expense_shares WHERE expense_id = ?').run(id);
     insertShares(id, body.shares);
     const shareUserIds = body.shares.map((s) => s.userId);
@@ -108,16 +149,32 @@ app.delete('/:id', (c) => {
   const me = c.get('user');
   const id = idParam.parse(c.req.param('id'));
   const row = editableExpenseOr404(me, id);
+  const shares = sharesOf(id);
+  if (row.group_id !== null) {
+    assertDepartedUnchanged(
+      row.group_id,
+      { currency: row.currency, shares: shares.map(shareLike) },
+      null,
+    );
+  }
   const now = nowIso();
   db.transaction(() => {
-    const shareUserIds = sharesOf(id).map((s) => s.user_id);
-    db.prepare('UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ?').run(now, now, id);
+    const { changes } = db
+      .prepare('UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+      .run(now, now, id);
+    if (changes === 0) throw new HTTPException(404, { message: 'not found' });
     recordActivity(
       me.id,
       'expense_deleted',
       row.group_id,
       id,
-      expenseSummary('deleted', me, row.description, row.group_id, shareUserIds),
+      expenseSummary(
+        'deleted',
+        me,
+        row.description,
+        row.group_id,
+        shares.map((s) => s.user_id),
+      ),
     );
   })();
   return c.body(null, 204);

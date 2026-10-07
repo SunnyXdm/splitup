@@ -10,6 +10,7 @@ import {
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import ThemeToggle from '@/components/layout/ThemeToggle';
 import { Button } from '@/components/ui/button';
+import { useSyncData } from '@/lib/queries';
 import { cn } from '@/lib/utils';
 
 const TABS = [
@@ -28,9 +29,24 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   const [expenseOpen, setExpenseOpen] = useState(false);
 
-  const groupMatch = matchPath('/groups/:id', pathname);
-  const parsedId = groupMatch ? Number(groupMatch.params.id) : NaN;
-  const groupId = Number.isInteger(parsedId) ? parsedId : null;
+  const { data: sync } = useSyncData();
+  const incomingRequests = sync?.friendRequests?.incoming.length ?? 0;
+
+  // The global "+" adds to whatever the current page is about: the group on a
+  // group page, a 1:1 expense with that friend on a friend page.
+  const routeId = (pattern: string) => {
+    const match = matchPath(pattern, pathname);
+    const parsed = match ? Number(match.params.id) : NaN;
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  };
+  const groupId = routeId('/groups/:id');
+  const routeFriendId = routeId('/friends/:id');
+  const friendId =
+    routeFriendId !== null && sync?.friendIds.includes(routeFriendId) ? routeFriendId : undefined;
+  const tabLabel = (to: string, label: string) =>
+    to === '/friends' && incomingRequests > 0
+      ? `${label}, ${incomingRequests} friend request${incomingRequests === 1 ? '' : 's'}`
+      : undefined;
 
   return (
     <div className="min-h-svh bg-background">
@@ -52,14 +68,16 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   key={to}
                   to={to}
                   aria-current={active ? 'page' : undefined}
+                  aria-label={tabLabel(to, label)}
                   className={cn(
-                    'rounded-full px-3 py-1.5 text-sm transition-colors',
+                    'relative rounded-full px-3 py-1.5 text-sm transition-colors',
                     active
                       ? 'font-medium text-foreground'
                       : 'text-muted-foreground hover:text-foreground',
                   )}
                 >
                   {label}
+                  {to === '/friends' ? <RequestBadge count={incomingRequests} /> : null}
                 </Link>
               );
             })}
@@ -105,14 +123,18 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 key={to}
                 to={to}
                 aria-current={active ? 'page' : undefined}
+                aria-label={tabLabel(to, label)}
                 className={cn(
-                  'flex min-h-14 flex-col items-center justify-center gap-1 py-2 transition-colors',
+                  'relative flex min-h-14 flex-col items-center justify-center gap-1 py-2 transition-colors',
                   // leave the center column free for the FAB
                   i === 2 && 'col-start-4',
                   active ? 'text-foreground' : 'text-muted-foreground',
                 )}
               >
-                <Icon className="size-5" aria-hidden="true" />
+                <span className="relative">
+                  <Icon className="size-5" aria-hidden="true" />
+                  {to === '/friends' ? <RequestBadge count={incomingRequests} /> : null}
+                </span>
                 <span className="text-[11px] leading-none">{label}</span>
               </Link>
             );
@@ -128,7 +150,25 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
       </nav>
 
-      <ExpenseForm open={expenseOpen} onOpenChange={setExpenseOpen} groupId={groupId} />
+      <ExpenseForm
+        open={expenseOpen}
+        onOpenChange={setExpenseOpen}
+        groupId={groupId}
+        friendId={friendId}
+      />
     </div>
+  );
+}
+
+/** Count of incoming friend requests, pinned to the Friends tab. */
+function RequestBadge({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <span
+      aria-hidden="true"
+      className="absolute -top-1.5 -right-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-signal px-1 text-[10px] leading-none font-semibold text-white tabular-nums"
+    >
+      {count > 9 ? '9+' : count}
+    </span>
   );
 }

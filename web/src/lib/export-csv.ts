@@ -2,8 +2,20 @@ import { CATEGORY_META } from './categories';
 import { currencyDigits } from './money';
 import type { SyncData, User } from './types';
 
-function csvField(value: string): string {
-  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+/**
+ * Spreadsheet formula-injection guard: a text cell starting with = + - @ tab
+ * or CR is executed as a formula by Excel/Sheets (an expense described as
+ * "=HYPERLINK(...)" would run on open). Prefix it with ' so it stays text.
+ * Plain numbers ("-12.50" nets) are left alone so they still sum.
+ */
+export function neutralizeFormula(value: string): string {
+  if (/^-?\d+(\.\d+)?$/.test(value)) return value;
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+}
+
+function csvField(raw: string): string {
+  const value = neutralizeFormula(raw);
+  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
 /**
@@ -54,5 +66,7 @@ export function downloadCsv(filename: string, csv: string): void {
   link.href = url;
   link.download = filename;
   link.click();
-  URL.revokeObjectURL(url);
+  // iOS Safari reads the blob asynchronously after click(); revoking at once
+  // can yield an empty or failed download.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

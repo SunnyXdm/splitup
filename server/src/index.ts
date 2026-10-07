@@ -78,8 +78,17 @@ pruneExpired();
 setInterval(pruneExpired, 6 * 60 * 60 * 1000).unref();
 
 const HOUR = 60 * 60 * 1000;
-const runBackup = () =>
-  backupDaily().catch((err) => console.error('backup failed', err));
+// Tracked so shutdown can let an in-flight snapshot finish before db.close().
+let backupInFlight: Promise<void> | null = null;
+const runBackup = () => {
+  if (backupInFlight) return backupInFlight;
+  backupInFlight = backupDaily()
+    .catch((err) => console.error('backup failed', err))
+    .finally(() => {
+      backupInFlight = null;
+    });
+  return backupInFlight;
+};
 checkpoint();
 void runBackup();
 setInterval(checkpoint, HOUR).unref();
@@ -96,11 +105,18 @@ function shutdown(signal: string) {
   if (stopping) return;
   stopping = true;
   console.log(`${signal}: shutting down`);
+  let closed = false;
   const close = () => {
+    if (closed) return;
+    closed = true;
     db.close();
     process.exit(0);
   };
-  server.close(close);
+  // Wait for in-flight requests AND any running backup (closing the db under
+  // it would abort the snapshot), all bounded by the 5s hard deadline.
+  server.close(() => {
+    void (backupInFlight ?? Promise.resolve()).then(close);
+  });
   setTimeout(close, 5000).unref();
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));

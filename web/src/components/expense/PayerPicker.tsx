@@ -1,3 +1,5 @@
+/* eslint-disable react-refresh/only-export-components */
+import { useId } from 'react';
 import { UsersRound } from 'lucide-react';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { Field, FieldDescription } from '@/components/ui/field';
@@ -87,6 +89,7 @@ export function PayerPicker({
   value: PayerState;
   onChange: (next: PayerState) => void;
 }) {
+  const labelId = useId();
   const nameOf = (id: number) => {
     const u = participants.find((p) => p.id === id);
     if (!u) return 'Someone';
@@ -100,9 +103,12 @@ export function PayerPicker({
 
   return (
     <Field>
-      <span className="eyebrow">Paid by</span>
+      <span id={labelId} className="eyebrow">
+        Paid by
+      </span>
       <PickerSelect
         title="Who paid?"
+        aria-labelledby={labelId}
         value={selectValue}
         onValueChange={(v) => {
           if (v === MULTIPLE) onChange({ ...value, mode: 'multiple' });

@@ -1,7 +1,24 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query';
 import { del } from 'idb-keyval';
 import { api } from './api';
-import { withCreatedExpense, withUpdatedExpense, withoutExpense } from './optimistic';
+import { broadcastSignOut, clearSignedOut, markSignedOut } from './auth-session';
+import {
+  tempExpenseId,
+  withCreatedExpense,
+  withResolvedTemp,
+  withRestoredExpense,
+  withRestoredUpdate,
+  withServerExpense,
+  withUpdatedExpense,
+  withoutExpense,
+  withoutExpenses,
+} from './optimistic';
 import { clearPendingInvite } from './pending-invite';
 import type {
   Expense,
@@ -16,6 +33,15 @@ import type {
 
 export const SYNC_KEY = ['sync'] as const;
 
+/** IndexedDB key of the persisted query cache. */
+export const PERSIST_KEY = 'splitup-cache';
+
+/**
+ * Shared key of every optimistic expense write (create / update / delete /
+ * settle), so they can coordinate: only the LAST one to settle refetches.
+ */
+export const EXPENSE_WRITE_KEY = ['expense-write'] as const;
+
 /** The whole app dataset. Persisted to IndexedDB, so it renders offline. */
 export function useSyncData() {
   return useQuery({
@@ -29,18 +55,37 @@ function useSyncInvalidation() {
   return { onSuccess: () => qc.invalidateQueries({ queryKey: SYNC_KEY }) };
 }
 
+/**
+ * Drops the cached dataset in memory AND on disk (a throttled persister write
+ * alone can be lost to a navigation). Used when the data belongs to someone
+ * else than the signed-in user.
+ */
+export async function discardCachedData(qc: QueryClient): Promise<void> {
+  await del(PERSIST_KEY);
+  await qc.resetQueries({ queryKey: SYNC_KEY });
+}
+
 export function useExchangeSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (idToken: string) =>
       api<{ me: Me }>('/api/auth/session', { method: 'POST', body: { idToken } }),
-    onSuccess: () => qc.invalidateQueries(),
+    onSuccess: async ({ me }) => {
+      // A different account than the cached dataset's owner: never let the
+      // previous user's data render (or persist) under the new session.
+      const cached = qc.getQueryData<SyncData>(SYNC_KEY);
+      if (cached && cached.me.id !== me.id) await discardCachedData(qc);
+      await qc.invalidateQueries();
+    },
   });
 }
 
 export function useSignOut() {
   const qc = useQueryClient();
   return useMutation({
+    // Mark the explicit sign-out BEFORE the request: from here on, a 401 must
+    // not trigger the automatic token re-exchange that would sign us back in.
+    onMutate: () => markSignedOut(),
     mutationFn: () => api<void>('/api/auth/session', { method: 'DELETE' }),
     // Wipe everything on sign-out — and delete the IndexedDB copy DIRECTLY.
     // qc.clear() alone only schedules a throttled persister write that the
@@ -49,8 +94,10 @@ export function useSignOut() {
     onSuccess: async () => {
       qc.clear();
       clearPendingInvite();
-      await del('splitup-cache');
+      await del(PERSIST_KEY);
+      broadcastSignOut();
     },
+    onError: () => clearSignedOut(),
   });
 }
 
@@ -139,10 +186,36 @@ export function useJoinInvite() {
   });
 }
 
+export type AddFriendResult = { status: 'requested' } | { status: 'friends'; user: User };
+
+/**
+ * Sends a friend request by email. The server answers 'requested' for unknown
+ * emails too (no account-existence oracle), or 'friends' when they had
+ * already asked me / we already are.
+ */
 export function useAddFriend() {
   return useMutation({
     mutationFn: (email: string) =>
-      api<{ user: User }>('/api/friends', { method: 'POST', body: { email } }),
+      api<AddFriendResult>('/api/friends', { method: 'POST', body: { email } }),
+    ...useSyncInvalidation(),
+  });
+}
+
+export function useAcceptFriendRequest() {
+  return useMutation({
+    mutationFn: (requestId: number) =>
+      api<{ status: 'friends'; user: User }>(`/api/friends/requests/${requestId}/accept`, {
+        method: 'POST',
+      }),
+    ...useSyncInvalidation(),
+  });
+}
+
+/** Declines an incoming request or cancels an outgoing one. */
+export function useDeleteFriendRequest() {
+  return useMutation({
+    mutationFn: (requestId: number) =>
+      api<void>(`/api/friends/requests/${requestId}`, { method: 'DELETE' }),
     ...useSyncInvalidation(),
   });
 }
@@ -170,26 +243,60 @@ export function useAcceptFriendInvite() {
   });
 }
 
+/** Applies a transform to the cached dataset, if any. */
+function patchSync(qc: QueryClient, fn: (sync: SyncData) => SyncData): void {
+  qc.setQueryData<SyncData>(SYNC_KEY, (old) => (old ? fn(old) : old));
+}
+
 /**
- * The three daily-use mutations are optimistic: the cached dataset updates
+ * Refetch once the LAST concurrent expense write settles. An earlier write
+ * refetching mid-burst would pull a snapshot without the later writes and
+ * flicker their optimistic rows away. onSettled runs while this mutation still
+ * counts as pending, hence `=== 1`.
+ */
+function invalidateIfLastWrite(qc: QueryClient) {
+  if (qc.isMutating({ mutationKey: EXPENSE_WRITE_KEY }) === 1) {
+    return qc.invalidateQueries({ queryKey: SYNC_KEY });
+  }
+}
+
+/** True while any optimistic expense write is in flight. */
+export function useExpenseWritePending(): boolean {
+  return useIsMutating({ mutationKey: EXPENSE_WRITE_KEY }) > 0;
+}
+
+export type CreateExpenseVars = ExpenseInput & {
+  /** Idempotency key so a retried POST can't record the expense twice. */
+  clientKey?: string;
+};
+
+/**
+ * The daily-use mutations are optimistic: the cached dataset updates
  * immediately (balances, lists, hero all derive from it), the request runs in
- * the background, errors roll the cache back, and the settled re-sync replaces
- * temp rows with server truth.
+ * the background, and an error undoes ONLY that mutation's own change (never
+ * a whole-snapshot restore, which would also wipe concurrent writes and any
+ * fresher server data). Successes swap temp rows for server rows; the last
+ * write to settle re-syncs.
  */
 export function useCreateExpense() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: ExpenseInput) => api<Expense>('/api/expenses', { method: 'POST', body }),
+    mutationKey: EXPENSE_WRITE_KEY,
+    mutationFn: (body: CreateExpenseVars) =>
+      api<Expense>('/api/expenses', { method: 'POST', body }),
     onMutate: async (body) => {
       await qc.cancelQueries({ queryKey: SYNC_KEY });
-      const prev = qc.getQueryData<SyncData>(SYNC_KEY);
-      if (prev) qc.setQueryData(SYNC_KEY, withCreatedExpense(prev, body, prev.me.id));
-      return { prev };
+      const tempId = tempExpenseId();
+      patchSync(qc, (sync) => withCreatedExpense(sync, body, sync.me.id, tempId));
+      return { tempId };
+    },
+    onSuccess: (expense, _body, ctx) => {
+      patchSync(qc, (sync) => withResolvedTemp(sync, ctx.tempId, expense));
     },
     onError: (_err, _body, ctx) => {
-      if (ctx?.prev) qc.setQueryData(SYNC_KEY, ctx.prev);
+      if (ctx) patchSync(qc, (sync) => withoutExpenses(sync, [ctx.tempId]));
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: SYNC_KEY }),
+    onSettled: () => invalidateIfLastWrite(qc),
   });
 }
 
@@ -201,25 +308,29 @@ export interface SettlementInput {
   /** Freshness fingerprint from settlementWatermark(); mismatch → 409. */
   watermark: string;
   watermarkCount: number;
+  /** Idempotency key so a retried POST can't record the payments twice. */
+  clientKey?: string;
   rows: { groupId: number | null; payerId: number; recipientId: number; amountCents: number }[];
 }
 
 /**
- * Records every payment row of one friend-balance settle atomically. Rows are
- * applied optimistically as individual payment expenses; a failure (including
- * the 409 freshness rejection) rolls all of them back together.
+ * Records every payment row of one settle atomically (friend-balance settles
+ * and in-group settles alike). Rows are applied optimistically as individual
+ * payment expenses; a failure (including the 409 freshness rejection) removes
+ * exactly those rows.
  */
 export function useSettleUp() {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: EXPENSE_WRITE_KEY,
     mutationFn: (body: SettlementInput) =>
       api<{ expenses: Expense[] }>('/api/settlements', { method: 'POST', body }),
     onMutate: async (body) => {
       await qc.cancelQueries({ queryKey: SYNC_KEY });
-      const prev = qc.getQueryData<SyncData>(SYNC_KEY);
-      if (prev) {
-        let next = prev;
-        for (const row of body.rows) {
+      const tempIds = body.rows.map(() => tempExpenseId());
+      patchSync(qc, (sync) => {
+        let next = sync;
+        body.rows.forEach((row, i) => {
           next = withCreatedExpense(
             next,
             {
@@ -236,51 +347,80 @@ export function useSettleUp() {
                 { userId: row.recipientId, paidCents: 0, owedCents: row.amountCents },
               ],
             },
-            prev.me.id,
+            sync.me.id,
+            tempIds[i],
           );
-        }
-        qc.setQueryData(SYNC_KEY, next);
-      }
-      return { prev };
+        });
+        return next;
+      });
+      return { tempIds };
+    },
+    onSuccess: ({ expenses }, _body, ctx) => {
+      patchSync(qc, (sync) => {
+        // The server returns one expense per row, in row order.
+        let next = sync;
+        ctx.tempIds.forEach((tempId, i) => {
+          next = expenses[i] ? withResolvedTemp(next, tempId, expenses[i]) : next;
+        });
+        return next;
+      });
     },
     onError: (_err, _body, ctx) => {
-      if (ctx?.prev) qc.setQueryData(SYNC_KEY, ctx.prev);
+      if (ctx) patchSync(qc, (sync) => withoutExpenses(sync, ctx.tempIds));
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: SYNC_KEY }),
+    onSettled: () => invalidateIfLastWrite(qc),
   });
 }
+
+export type UpdateExpenseVars = ExpenseInput & {
+  id: number;
+  /** The updatedAt the edit started from; the server 409s if it changed. */
+  expectedUpdatedAt: string;
+};
 
 export function useUpdateExpense() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: ExpenseInput & { id: number }) =>
+    mutationKey: EXPENSE_WRITE_KEY,
+    mutationFn: ({ id, ...body }: UpdateExpenseVars) =>
       api<Expense>(`/api/expenses/${id}`, { method: 'PATCH', body }),
     onMutate: async ({ id, ...body }) => {
       await qc.cancelQueries({ queryKey: SYNC_KEY });
-      const prev = qc.getQueryData<SyncData>(SYNC_KEY);
-      if (prev) qc.setQueryData(SYNC_KEY, withUpdatedExpense(prev, id, body));
-      return { prev };
+      const prev = qc.getQueryData<SyncData>(SYNC_KEY)?.expenses.find((e) => e.id === id);
+      patchSync(qc, (sync) => withUpdatedExpense(sync, id, body));
+      const optimistic = qc.getQueryData<SyncData>(SYNC_KEY)?.expenses.find((e) => e.id === id);
+      return { prev, optimistic };
+    },
+    onSuccess: (expense) => {
+      patchSync(qc, (sync) => withServerExpense(sync, expense));
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev) qc.setQueryData(SYNC_KEY, ctx.prev);
+      if (ctx?.prev && ctx.optimistic) {
+        const { prev, optimistic } = ctx;
+        patchSync(qc, (sync) => withRestoredUpdate(sync, prev, optimistic));
+      }
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: SYNC_KEY }),
+    onSettled: () => invalidateIfLastWrite(qc),
   });
 }
 
 export function useDeleteExpense() {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: EXPENSE_WRITE_KEY,
     mutationFn: (id: number) => api<void>(`/api/expenses/${id}`, { method: 'DELETE' }),
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: SYNC_KEY });
-      const prev = qc.getQueryData<SyncData>(SYNC_KEY);
-      if (prev) qc.setQueryData(SYNC_KEY, withoutExpense(prev, id));
+      const prev = qc.getQueryData<SyncData>(SYNC_KEY)?.expenses.find((e) => e.id === id);
+      patchSync(qc, (sync) => withoutExpense(sync, id));
       return { prev };
     },
     onError: (_err, _id, ctx) => {
-      if (ctx?.prev) qc.setQueryData(SYNC_KEY, ctx.prev);
+      if (ctx?.prev) {
+        const { prev } = ctx;
+        patchSync(qc, (sync) => withRestoredExpense(sync, prev));
+      }
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: SYNC_KEY }),
+    onSettled: () => invalidateIfLastWrite(qc),
   });
 }

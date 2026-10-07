@@ -2,12 +2,61 @@ import { randomBytes } from 'node:crypto';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { APP_ORIGIN, requireAuth, type AppEnv } from '../auth';
-import { db, nowIso, type GroupRow } from '../db';
+import { db, nowIso, type GroupRow, type UserRow } from '../db';
 import { groupCreateBody, groupPatchBody, idParam, memberBody } from '../validate';
 import { readJson, toGroup } from '../lib/wire';
 import { areFriends, groupMemberIds, isMember, memberGroupOr404, recordActivity } from '../lib/expense';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** True when the user's net in the group is nonzero in any currency. */
+function memberUnsettled(groupId: number, userId: number): boolean {
+  return (
+    db
+      .prepare<[number, number], { currency: string }>(
+        `SELECT e.currency FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
+         WHERE e.group_id = ? AND e.deleted_at IS NULL AND s.user_id = ?
+         GROUP BY e.currency HAVING SUM(s.paid_cents - s.owed_cents) != 0 LIMIT 1`,
+      )
+      .get(groupId, userId) !== undefined
+  );
+}
+
+/** True when anyone (members or departed share-holders) has a nonzero net. */
+function groupUnsettled(groupId: number): boolean {
+  return (
+    db
+      .prepare<[number], { user_id: number }>(
+        `SELECT s.user_id FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
+         WHERE e.group_id = ? AND e.deleted_at IS NULL
+         GROUP BY s.user_id, e.currency HAVING SUM(s.paid_cents - s.owed_cents) != 0 LIMIT 1`,
+      )
+      .get(groupId) !== undefined
+  );
+}
+
+/**
+ * Removes `me` from the group. The creator role passes to the earliest-joined
+ * remaining member; the last member may leave only a fully settled group,
+ * which is then archived like a delete (nobody would be left to see it).
+ */
+function leaveGroup(group: GroupRow, me: UserRow): void {
+  if (memberUnsettled(group.id, me.id)) throw new HTTPException(409, { message: 'unsettled' });
+  const others = groupMemberIds(group.id).filter((uid) => uid !== me.id);
+  if (others.length === 0 && groupUnsettled(group.id)) {
+    throw new HTTPException(409, { message: 'unsettled' });
+  }
+  db.transaction(() => {
+    db.prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?').run(group.id, me.id);
+    if (others.length === 0) {
+      db.prepare('UPDATE groups SET deleted_at = ? WHERE id = ?').run(nowIso(), group.id);
+      db.prepare('DELETE FROM group_invites WHERE group_id = ?').run(group.id);
+    } else if (group.created_by === me.id) {
+      db.prepare('UPDATE groups SET created_by = ? WHERE id = ?').run(others[0], group.id);
+    }
+    recordActivity(me.id, 'member_removed', group.id, null, `${me.name} left ${group.name}`);
+  })();
+}
 
 const app = new Hono<AppEnv>();
 app.use(requireAuth);
@@ -76,14 +125,7 @@ app.delete('/:id', (c) => {
   }
   // Deleting a group hides its expenses from every balance view, so it must
   // not be able to erase live debts — same rule as leaving.
-  const unsettled = db
-    .prepare<[number], { user_id: number }>(
-      `SELECT s.user_id FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
-       WHERE e.group_id = ? AND e.deleted_at IS NULL
-       GROUP BY s.user_id, e.currency HAVING SUM(s.paid_cents - s.owed_cents) != 0 LIMIT 1`,
-    )
-    .get(id);
-  if (unsettled) throw new HTTPException(409, { message: 'unsettled' });
+  if (groupUnsettled(id)) throw new HTTPException(409, { message: 'unsettled' });
   db.transaction(() => {
     // Archive, never destroy: expenses/shares/members stay in the database so
     // nothing is lost; the group simply disappears from everyone's sync.
@@ -97,16 +139,7 @@ app.delete('/:id', (c) => {
 app.post('/:id/leave', (c) => {
   const me = c.get('user');
   const id = idParam.parse(c.req.param('id'));
-  memberGroupOr404(id, me.id);
-  const { net } = db
-    .prepare<[number, number], { net: number }>(
-      `SELECT COALESCE(SUM(s.paid_cents - s.owed_cents), 0) AS net
-       FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
-       WHERE e.group_id = ? AND e.deleted_at IS NULL AND s.user_id = ?`,
-    )
-    .get(id, me.id)!;
-  if (net !== 0) throw new HTTPException(409, { message: 'unsettled' });
-  db.prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?').run(id, me.id);
+  leaveGroup(memberGroupOr404(id, me.id), me);
   return c.body(null, 204);
 });
 
@@ -157,19 +190,17 @@ app.delete('/:id/members/:userId', (c) => {
   const targetId = idParam.parse(c.req.param('userId'));
   const group = memberGroupOr404(id, me.id);
   if (!isMember(id, targetId)) throw new HTTPException(404, { message: 'not found' });
+  // Removing yourself is leaving (creator hand-off, last-member archive).
+  if (targetId === me.id) {
+    leaveGroup(group, me);
+    return c.body(null, 204);
+  }
   if (targetId === group.created_by) {
     throw new HTTPException(403, { message: 'the group creator cannot be removed' });
   }
   // Same safety rule as leaving: only settled members can be removed, so a
   // mistaken add is instantly fixable but debts can never be kicked away.
-  const { net } = db
-    .prepare<[number, number], { net: number }>(
-      `SELECT COALESCE(SUM(s.paid_cents - s.owed_cents), 0) AS net
-       FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
-       WHERE e.group_id = ? AND e.deleted_at IS NULL AND s.user_id = ?`,
-    )
-    .get(id, targetId)!;
-  if (net !== 0) throw new HTTPException(409, { message: 'unsettled' });
+  if (memberUnsettled(id, targetId)) throw new HTTPException(409, { message: 'unsettled' });
   db.transaction(() => {
     db.prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?').run(id, targetId);
     const target = db
@@ -180,9 +211,7 @@ app.delete('/:id/members/:userId', (c) => {
       'member_removed',
       id,
       null,
-      targetId === me.id
-        ? `${me.name} left ${group.name}`
-        : `${me.name} removed ${target.name} from ${group.name}`,
+      `${me.name} removed ${target.name} from ${group.name}`,
     );
   })();
   return c.body(null, 204);
