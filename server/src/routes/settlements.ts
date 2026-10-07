@@ -10,6 +10,7 @@ import {
   type SettlementBatch,
 } from '../lib/wire';
 import { notifySettlement, notifySettlementUndone } from '../lib/notify-events';
+import { recordRevision } from '../lib/revisions';
 import {
   areFriends,
   assertDepartedUnchanged,
@@ -253,6 +254,7 @@ app.post('/', async (c) => {
         id,
         paymentSummary(shares, row.groupId, body.currency),
       );
+      recordRevision(id, 'created', me.id, now);
       created.push(expenseWire(id));
     }
     return { expenses: created, batchId };
@@ -309,7 +311,10 @@ app.delete('/:batchId', (c) => {
     const del = db.prepare(
       'UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
     );
-    for (const row of rows) del.run(now, now, row.id);
+    for (const row of rows) {
+      del.run(now, now, row.id);
+      recordRevision(row.id, 'deleted', me.id, now);
+    }
     const amount = formatPaymentAmount(batch.amount_cents, batch.currency);
     // A settle recorded entirely inside one group stays in that group's feed;
     // anything else is tied to a row both people hold a share in, so both see it.

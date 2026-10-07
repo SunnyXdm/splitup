@@ -180,6 +180,79 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
 `);
 
+// Expense revision history: one immutable snapshot per change, written in the
+// same transaction as the change itself. The snapshot is the expense's
+// user-facing state as JSON, built by SQLite from the live row (SNAPSHOT_SQL)
+// so every writer — routes, backfill, scripts — produces the same shape.
+db.exec(`
+CREATE TABLE IF NOT EXISTS expense_revisions (
+  id INTEGER PRIMARY KEY,
+  expense_id INTEGER NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('created', 'updated', 'deleted', 'restored')),
+  actor_id INTEGER NOT NULL REFERENCES users(id),
+  snapshot TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (expense_id, revision)
+);
+`);
+
+/** SQL expression for the snapshot JSON of the expenses row aliased `e`. */
+export const SNAPSHOT_SQL = `json_object(
+  'description', e.description,
+  'amountCents', e.amount_cents,
+  'currency', e.currency,
+  'date', e.date,
+  'category', e.category,
+  'notes', e.notes,
+  'groupId', e.group_id,
+  'isPayment', json(CASE WHEN e.is_payment THEN 'true' ELSE 'false' END),
+  'shares', (
+    SELECT json_group_array(
+      json_object('userId', s.user_id, 'paidCents', s.paid_cents, 'owedCents', s.owed_cents)
+    )
+    FROM (SELECT * FROM expense_shares WHERE expense_id = e.id ORDER BY user_id) s
+  )
+)`;
+
+/**
+ * Backfill for expenses that predate revisions: a 'created' snapshot of the
+ * current state (attributed to the creator, at created_at), then a 'deleted'
+ * entry for soft-deleted ones whose history doesn't already end in one
+ * (attributed to whoever the activity feed says deleted it, else the
+ * creator). Every live writer records its own revisions, so re-running
+ * matches nothing.
+ */
+export function backfillRevisions(): void {
+  db.transaction(() => {
+    db.exec(`
+      INSERT INTO expense_revisions (expense_id, revision, action, actor_id, snapshot, created_at)
+      SELECT e.id, 1, 'created', e.created_by, ${SNAPSHOT_SQL}, e.created_at
+      FROM expenses e
+      WHERE NOT EXISTS (SELECT 1 FROM expense_revisions r WHERE r.expense_id = e.id);
+
+      INSERT INTO expense_revisions (expense_id, revision, action, actor_id, snapshot, created_at)
+      SELECT e.id,
+        (SELECT MAX(r.revision) FROM expense_revisions r WHERE r.expense_id = e.id) + 1,
+        'deleted',
+        COALESCE(
+          (SELECT a.actor_id FROM activity a
+           WHERE a.expense_id = e.id AND a.type IN ('expense_deleted', 'payment_undone')
+           ORDER BY a.id DESC LIMIT 1),
+          e.created_by
+        ),
+        ${SNAPSHOT_SQL}, e.deleted_at
+      FROM expenses e
+      WHERE e.deleted_at IS NOT NULL
+        AND (
+          SELECT r.action FROM expense_revisions r WHERE r.expense_id = e.id
+          ORDER BY r.revision DESC LIMIT 1
+        ) IS NOT 'deleted';
+    `);
+  })();
+}
+backfillRevisions();
+
 export interface UserRow {
   id: number;
   shoo_sub: string;
@@ -242,6 +315,16 @@ export interface ActivityRow {
   group_id: number | null;
   expense_id: number | null;
   summary: string;
+  created_at: string;
+}
+
+export interface ExpenseRevisionRow {
+  id: number;
+  expense_id: number;
+  revision: number;
+  action: 'created' | 'updated' | 'deleted' | 'restored';
+  actor_id: number;
+  snapshot: string;
   created_at: string;
 }
 

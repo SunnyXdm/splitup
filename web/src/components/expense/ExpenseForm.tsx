@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Camera, CloudOff, Plus, Repeat2, Trash2, TriangleAlert, X } from 'lucide-react';
+import { Camera, CloudOff, History, Plus, Repeat2, Trash2, TriangleAlert, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { CategoryIcon } from '@/components/common/CategoryIcon';
 import { useOnline } from '@/components/layout/OfflineBanner';
@@ -52,6 +52,7 @@ import {
   useUpdateExpense,
 } from '@/lib/queries';
 import type { Category, Expense, SyncData, User } from '@/lib/types';
+import ExpenseHistorySheet from './ExpenseHistorySheet';
 import { centsToInput, currencySymbol } from './money-input';
 import { PayerPicker, defaultPayerState } from './PayerPicker';
 import { SplitEditor, defaultSplitState } from './SplitEditor';
@@ -128,6 +129,7 @@ function FormBody({
   const drafts = useDrafts(sync?.me.id);
   // "Repeat" turns this sheet from editing an expense into adding a copy of it.
   const [repeatOf, setRepeatOf] = useState<Expense | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const mode: FormMode = repeatOf
     ? { kind: 'repeat', expense: repeatOf }
     : draftId !== undefined
@@ -139,20 +141,44 @@ function FormBody({
     <>
       <SheetHeader className="flex-row items-center gap-2 pr-14 pb-0">
         <SheetTitle className="text-xl">{TITLES[mode.kind]}</SheetTitle>
-        {mode.kind === 'edit' && !mode.expense.isPayment ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="ml-auto rounded-full"
-            aria-label="Repeat this expense — add a copy dated today"
-            onClick={() => setRepeatOf(mode.expense)}
-          >
-            <Repeat2 data-icon="inline-start" aria-hidden="true" />
-            Repeat
-          </Button>
+        {mode.kind === 'edit' ? (
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-sm"
+              className="rounded-full"
+              aria-label="History — see and restore earlier versions"
+              title="History"
+              onClick={() => setHistoryOpen(true)}
+            >
+              <History aria-hidden="true" />
+            </Button>
+            {!mode.expense.isPayment ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                aria-label="Repeat this expense — add a copy dated today"
+                onClick={() => setRepeatOf(mode.expense)}
+              >
+                <Repeat2 data-icon="inline-start" aria-hidden="true" />
+                Repeat
+              </Button>
+            ) : null}
+          </div>
         ) : null}
       </SheetHeader>
+      {mode.kind === 'edit' ? (
+        <ExpenseHistorySheet
+          open={historyOpen}
+          onOpenChange={setHistoryOpen}
+          expense={mode.expense}
+          // The form holds the pre-restore values: close it so nothing stale is saved.
+          onRestored={() => onOpenChange(false)}
+        />
+      ) : null}
       {!sync ? (
         <FieldDescription className="px-4 pb-6">
           Your data hasn't loaded yet — try again in a moment.

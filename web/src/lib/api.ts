@@ -59,6 +59,15 @@ export const isDepartedMember = (err: unknown): boolean =>
 export const isStale = (err: unknown): boolean =>
   err instanceof ApiError && err.status === 409 && err.message === 'stale';
 
+/** 409 codes from POST /api/expenses/:id/restore. */
+const RESTORE_MESSAGES: Record<string, string> = {
+  'already current': 'That version is already the current one.',
+  'member left': 'That version includes someone who has since left the group.',
+  'not friends': 'That version is with someone you’re no longer friends with.',
+  'group currency changed': 'The group’s currency has changed since that version.',
+  'version cannot be restored': 'That version can’t be restored anymore.',
+};
+
 /** Human copy for a failed write: known server codes get a clear sentence. */
 export function errorMessage(err: unknown): string {
   if (isConflict(err)) return 'Someone else changed this expense — reopen to see the latest.';
@@ -70,6 +79,16 @@ export function errorMessage(err: unknown): string {
   }
   if (err instanceof ApiError && err.status === 409 && err.message === 'part of a settle-up') {
     return 'This payment is part of a settle-up — open it and use Undo payment instead.';
+  }
+  if (
+    err instanceof ApiError &&
+    err.status === 409 &&
+    Object.hasOwn(RESTORE_MESSAGES, err.message)
+  ) {
+    return RESTORE_MESSAGES[err.message];
+  }
+  if (err instanceof ApiError && err.status === 404) {
+    return 'That’s no longer available — it may have been removed or you lost access.';
   }
   if (err instanceof Error && err.message) return err.message;
   return 'Something went wrong — please try again.';

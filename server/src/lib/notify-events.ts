@@ -33,12 +33,12 @@ const groupName = (groupId: number) =>
     ?.name ?? null;
 
 /**
- * Expense created / edited / deleted: everyone holding a share (for edits,
+ * Expense created / edited / deleted / restored: everyone holding a share (for edits,
  * before OR after — someone dropped from the split should hear about it).
  * In a group, only current members: a departed member can't open the group.
  */
 export function notifyExpense(
-  kind: 'created' | 'edited' | 'deleted',
+  kind: 'created' | 'edited' | 'deleted' | 'restored',
   actor: Actor,
   expense: NotifyExpense,
   previousShareUserIds: number[] = [],

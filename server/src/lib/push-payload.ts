@@ -91,7 +91,7 @@ export function positionText(share: PayloadShare | undefined, currency: string):
  * group member who recorded it on their behalf.
  */
 function paymentText(
-  verb: 'recorded' | 'edited' | 'deleted',
+  verb: 'recorded' | 'edited' | 'deleted' | 'restored',
   actor: { id: number; name: string },
   recipientId: number,
   shares: PayloadShare[],
@@ -120,7 +120,7 @@ function paymentText(
  * person who was removed from the split learn about it.
  */
 export function expensePayload(
-  kind: 'created' | 'edited' | 'deleted',
+  kind: 'created' | 'edited' | 'deleted' | 'restored',
   actor: { id: number; name: string },
   recipientId: number,
   expense: ExpenseContext,
@@ -145,11 +145,11 @@ export function expensePayload(
   if (kind === 'created') {
     const pos = positionText(share, expense.currency);
     body = `${who} added ${desc}${pos ? ` — ${pos}` : ''}`;
-  } else if (kind === 'edited') {
+  } else if (kind === 'edited' || kind === 'restored') {
     const pos = share ? positionText(share, expense.currency) : null;
     body = share
-      ? `${who} edited ${desc}${pos ? ` — ${pos}` : ''}`
-      : `${who} edited ${desc} — you’re no longer in it`;
+      ? `${who} ${kind} ${desc}${pos ? ` — ${pos}` : ''}`
+      : `${who} ${kind} ${desc} — you’re no longer in it`;
   } else {
     body = `${who} deleted ${desc}`;
   }
