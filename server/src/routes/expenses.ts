@@ -94,7 +94,7 @@ app.patch('/:id', async (c) => {
     const { changes } = db
       .prepare(
         `UPDATE expenses SET group_id = ?, description = ?, amount_cents = ?, currency = ?, date = ?,
-           category = ?, notes = ?, is_payment = ?, updated_at = ?
+           category = ?, notes = ?, is_payment = ?, updated_at = ?, split_meta = ?
          WHERE id = ? AND deleted_at IS NULL`,
       )
       .run(
@@ -107,6 +107,9 @@ app.patch('/:id', async (c) => {
         body.notes || null,
         body.isPayment ? 1 : 0,
         now,
+        // An edit without a split description clears the old one: it may no
+        // longer match the shares.
+        body.split ? JSON.stringify(body.split) : null,
         id,
       );
     if (changes === 0) throw new HTTPException(404, { message: 'not found' });
@@ -356,7 +359,7 @@ app.post('/:id/restore', async (c) => {
     const { changes } = db
       .prepare(
         `UPDATE expenses SET description = ?, amount_cents = ?, currency = ?, date = ?,
-           category = ?, notes = ?, deleted_at = NULL, updated_at = ?
+           category = ?, notes = ?, deleted_at = NULL, updated_at = ?, split_meta = NULL
          WHERE id = ? AND updated_at = ?`,
       )
       .run(

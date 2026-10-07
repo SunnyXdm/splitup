@@ -58,6 +58,20 @@ export interface Expense {
   updatedAt: string;
   /** Settle-up batch this payment row belongs to. Optional: absent from older caches. */
   settlementBatchId?: number | null;
+  /** How the split was entered; absent for payments and older expenses. */
+  split?: SplitMeta;
+}
+
+/**
+ * The split as the person entered it (server lib/split-meta.ts), so an edit
+ * reopens the same mode. `values` are keyed by user id: exact minor units
+ * (unequal), basis points (percent) or share counts (shares). Only people
+ * with a positive role are listed; percent/shares tie order = list order.
+ */
+export interface SplitMeta {
+  mode: 'equal' | 'unequal' | 'percent' | 'shares';
+  participants: number[];
+  values?: Record<string, number>;
 }
 
 export type SettlementMethod = 'cash' | 'upi' | 'bank' | 'other';
@@ -241,6 +255,8 @@ export interface ExpenseInput {
   notes: string | null;
   isPayment: boolean;
   shares: ExpenseShare[];
+  /** How the split was entered; validated server-side against `shares`. */
+  split?: SplitMeta;
 }
 
 export interface ReceiptLineItem {

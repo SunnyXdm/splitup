@@ -101,14 +101,16 @@ export function localeDecimalSeparator(locale?: string): ',' | '.' {
   return sep;
 }
 
-/** "1", "12", "123" followed by one or more ",ddd" groups (sep = the grouping char). */
+/**
+ * "1", "12", "123" followed by one or more ",ddd" groups (sep = the grouping
+ * char) — or, with a comma, Indian lakh/crore grouping: 1–2 leading digits,
+ * 2-digit groups, then a final 3-digit group ("2,81,152", "1,00,00,000").
+ */
 function isGrouped(s: string, sep: ',' | '.'): boolean {
   const parts = s.split(sep);
-  return (
-    parts.length >= 2 &&
-    /^\d{1,3}$/.test(parts[0]) &&
-    parts.slice(1).every((p) => /^\d{3}$/.test(p))
-  );
+  if (parts.length < 2) return false;
+  if (/^\d{1,3}$/.test(parts[0]) && parts.slice(1).every((p) => /^\d{3}$/.test(p))) return true;
+  return sep === ',' && /^\d{1,2}(,\d{2})+,\d{3}$/.test(s);
 }
 
 /**
@@ -167,6 +169,28 @@ export function normalizeAmountText(input: string, locale?: string): string | nu
     return normalized ?? '';
   });
   return failed ? null : out;
+}
+
+/**
+ * Minor units → an editable amount WITH digit grouping in the user's locale
+ * ("2,81,152.66" in en-IN, "281.152,66" in de-DE). Falls back to the plain
+ * form when the parser couldn't read the grouped text back exactly.
+ */
+export function formatAmountInput(cents: number, currency: string, locale?: string): string {
+  const digits = currencyDigits(currency);
+  const plain = (cents / 10 ** digits).toFixed(digits);
+  let grouped: string;
+  try {
+    grouped = new Intl.NumberFormat(locale, {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+      useGrouping: true,
+    }).format(cents / 10 ** digits);
+  } catch {
+    return plain;
+  }
+  const back = parseAmountToCents(grouped, currency, locale);
+  return back === cents ? grouped : plain;
 }
 
 /** True when the text is already a plain canonical amount ("12", "12.50"). */

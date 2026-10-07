@@ -59,8 +59,17 @@ export function formatBp(bp: number): string {
 }
 
 /** Local YYYY-MM-DD for <input type="date">. */
-export function todayISO(): string {
-  const d = new Date();
+export function todayISO(d: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** "Today" / "Yesterday" / "Tomorrow", else null — said beside a date field. */
+export function relativeDay(date: string, today: string = todayISO()): string | null {
+  if (date === today) return 'Today';
+  const [y, m, d] = today.split('-').map(Number);
+  const shift = (days: number) => todayISO(new Date(y, m - 1, d + days));
+  if (date === shift(-1)) return 'Yesterday';
+  if (date === shift(1)) return 'Tomorrow';
+  return null;
 }

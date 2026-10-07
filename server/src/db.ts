@@ -180,6 +180,12 @@ if (!expenseCols.some((c) => c.name === 'superseded_by')) {
   db.exec('ALTER TABLE expenses ADD COLUMN superseded_by INTEGER REFERENCES expenses(id)');
 }
 
+// How the split was entered (mode + parameters, JSON — see lib/split-meta.ts),
+// so editing reopens the same split. NULL for payments and older expenses.
+if (!expenseCols.some((c) => c.name === 'split_meta')) {
+  db.exec('ALTER TABLE expenses ADD COLUMN split_meta TEXT');
+}
+
 /** The ids a migration replacement's notes name ("migrated from #12+#13"), else []. */
 export function migratedFromIds(notes: string | null): number[] {
   const m = /^migrated from (#\d+(?:\+#\d+)*)$/.exec(notes ?? '');
@@ -441,6 +447,8 @@ export interface ExpenseRow {
   settlement_batch_id: number | null;
   /** A migration replacement of this (soft-deleted) payment; never restorable. */
   superseded_by: number | null;
+  /** SplitMeta JSON (lib/split-meta.ts); null when unknown. */
+  split_meta: string | null;
 }
 export interface SettlementBatchRow {
   id: number;

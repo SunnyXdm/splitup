@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { splitMetaProblem } from './lib/split-meta';
 
 export const CATEGORIES = [
   'general',
@@ -85,6 +86,18 @@ const shareSchema = z.strictObject({
   owedCents: z.number().int().min(0).max(MAX_CENTS),
 });
 
+/**
+ * How the split was entered (see lib/split-meta.ts). Optional: older clients
+ * and payments omit it; when present it must reproduce the shares exactly.
+ */
+const splitMetaSchema = z.strictObject({
+  mode: z.enum(['equal', 'unequal', 'percent', 'shares']),
+  participants: z.array(z.number().int().positive()).min(1).max(50),
+  values: z
+    .record(z.string().regex(/^[1-9]\d{0,15}$/), z.number().int().min(0).max(MAX_CENTS))
+    .optional(),
+});
+
 const expenseFields = z.strictObject({
   groupId: z.number().int().positive().nullable(),
   description: z.string().trim().min(1).max(200),
@@ -95,6 +108,7 @@ const expenseFields = z.strictObject({
   notes: z.string().trim().max(1000).nullable(),
   isPayment: z.boolean(),
   shares: z.array(shareSchema).min(1).max(50),
+  split: splitMetaSchema.optional(),
 });
 
 function refineExpense(e: z.infer<typeof expenseFields>, ctx: z.RefinementCtx): void {
@@ -121,6 +135,12 @@ function refineExpense(e: z.infer<typeof expenseFields>, ctx: z.RefinementCtx): 
     )
   ) {
     ctx.addIssue({ code: 'custom', message: 'a payment needs exactly one payer and one recipient' });
+  }
+  if (e.split !== undefined) {
+    const problem = e.isPayment
+      ? 'a payment has no split'
+      : splitMetaProblem(e.split, e.amountCents, e.shares);
+    if (problem) ctx.addIssue({ code: 'custom', message: problem, path: ['split'] });
   }
 }
 

@@ -1,14 +1,17 @@
 /* eslint-disable react-refresh/only-export-components */
-import { Minus, Plus } from 'lucide-react';
+import { useId, useState } from 'react';
+import { Equal, Minus, Plus } from 'lucide-react';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Field, FieldDescription } from '@/components/ui/field';
+import { Field, FieldDescription, FieldLabel } from '@/components/ui/field';
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/components/ui/input-group';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { formatMoney } from '@/lib/money';
+import { properName } from '@/lib/names';
 import type { User } from '@/lib/types';
-import { centsToInput, currencySymbol } from './money-input';
+import { cn } from '@/lib/utils';
+import { centsToInput, currencySymbol, parseShareInput } from './money-input';
 
 export {
   defaultSplitState,
@@ -19,7 +22,7 @@ export {
   type SplitState,
 } from './split-state';
 import type { SplitMode, SplitState } from './split-state';
-import { resolveSplit } from './split-state';
+import { resolveSplit, withSplitMode } from './split-state';
 
 const MODES: { mode: SplitMode; label: string }[] = [
   { mode: 'equal', label: 'Equal' },
@@ -35,6 +38,9 @@ export function SplitEditor({
   currency,
   value,
   onChange,
+  showErrors = false,
+  legacy = false,
+  errorId,
 }: {
   participants: User[];
   meId: number;
@@ -43,12 +49,27 @@ export function SplitEditor({
   currency: string;
   value: SplitState;
   onChange: (next: SplitState) => void;
+  /** The form was submitted: show a failing split as an error right away. */
+  showErrors?: boolean;
+  /** Opened from stored amounts with no split method on record. */
+  legacy?: boolean;
+  /** id for the error/remainder line (the summary row points at it). */
+  errorId?: string;
 }) {
+  // A remainder ("₹200 left to split") is a neutral hint until the person
+  // edits a field or tries to save — never an error before they've typed.
+  const [touched, setTouched] = useState(false);
+  const labelId = useId();
+  const edit = (next: SplitState) => {
+    setTouched(true);
+    onChange(next);
+  };
+  const ids = participants.map((p) => p.id);
   const resolved =
     amountCents !== null ? resolveSplit(value, participants, amountCents, currency) : null;
   const owedFor = (id: number) =>
     resolved?.owed ? (resolved.owed.find((o) => o.userId === id)?.owedCents ?? 0) : null;
-  const nameOf = (p: User) => (p.id === meId ? 'You' : p.name);
+  const nameOf = (p: User) => (p.id === meId ? 'You' : properName(p.name));
   const preview = (id: number) => {
     const owed = owedFor(id);
     if (owed === null) return null;
@@ -58,24 +79,25 @@ export function SplitEditor({
       </span>
     );
   };
+  const loud = touched || showErrors;
 
   return (
     <Field>
-      <span className="eyebrow">Split</span>
+      <FieldLabel id={labelId}>Split</FieldLabel>
       <ToggleGroup
         value={[value.mode]}
         onValueChange={(v) => {
-          if (v[0]) onChange({ ...value, mode: v[0] as SplitMode });
+          if (v[0]) onChange(withSplitMode(value, v[0] as SplitMode, ids, amountCents, currency));
         }}
         className="w-full"
-        aria-label="Split method"
+        aria-labelledby={labelId}
       >
         {MODES.map(({ mode, label }) => (
           <ToggleGroupItem
             key={mode}
             value={mode}
             variant="outline"
-            className="h-10 min-w-0 flex-1 rounded-full aria-pressed:border-primary"
+            className="h-11 min-w-0 flex-1 rounded-full aria-pressed:border-primary"
           >
             {label}
           </ToggleGroupItem>
@@ -91,7 +113,7 @@ export function SplitEditor({
                 <Checkbox
                   checked={checked}
                   onCheckedChange={(next) =>
-                    onChange({
+                    edit({
                       ...value,
                       equalChecked: next
                         ? [...value.equalChecked, p.id]
@@ -111,11 +133,16 @@ export function SplitEditor({
 
       {value.mode === 'unequal' ? (
         <div className="flex flex-col gap-2">
+          {legacy ? (
+            <FieldDescription>
+              Saved as exact amounts — the original split method wasn’t recorded.
+            </FieldDescription>
+          ) : null}
           {participants.map((p) => (
             <div key={p.id} className="flex min-h-11 items-center gap-3">
               <UserAvatar user={p} size="sm" />
               <span className="min-w-0 flex-1 truncate text-sm">{nameOf(p)}</span>
-              <InputGroup className="h-10 w-32 rounded-full">
+              <InputGroup className="h-11 w-36 rounded-full">
                 <InputGroupAddon>
                   <InputGroupText>{currencySymbol(currency)}</InputGroupText>
                 </InputGroupAddon>
@@ -123,10 +150,10 @@ export function SplitEditor({
                   inputMode="decimal"
                   placeholder={centsToInput(0, currency)}
                   aria-label={`Amount owed by ${p.name}`}
-                  className="text-right"
+                  className="text-right tabular-nums"
                   value={value.unequalRaw[p.id] ?? ''}
                   onChange={(e) =>
-                    onChange({
+                    edit({
                       ...value,
                       unequalRaw: { ...value.unequalRaw, [p.id]: e.target.value },
                     })
@@ -135,6 +162,22 @@ export function SplitEditor({
               </InputGroup>
             </div>
           ))}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="self-start rounded-full"
+            onClick={() => {
+              // Between the people who have an amount now (or everyone).
+              const charged = ids.filter(
+                (id) => (parseShareInput(value.unequalRaw[id] ?? '', currency) ?? 0) > 0,
+              );
+              edit({ ...value, mode: 'equal', equalChecked: charged.length > 0 ? charged : ids });
+            }}
+          >
+            <Equal data-icon="inline-start" aria-hidden="true" />
+            Split equally
+          </Button>
         </div>
       ) : null}
 
@@ -145,15 +188,15 @@ export function SplitEditor({
               <UserAvatar user={p} size="sm" />
               <span className="min-w-0 flex-1 truncate text-sm">{nameOf(p)}</span>
               {preview(p.id)}
-              <InputGroup className="h-10 w-24 rounded-full">
+              <InputGroup className="h-11 w-24 rounded-full">
                 <InputGroupInput
                   inputMode="decimal"
                   placeholder="0"
                   aria-label={`Percentage for ${p.name}`}
-                  className="text-right"
+                  className="text-right tabular-nums"
                   value={value.percentRaw[p.id] ?? ''}
                   onChange={(e) =>
-                    onChange({
+                    edit({
                       ...value,
                       percentRaw: { ...value.percentRaw, [p.id]: e.target.value },
                     })
@@ -173,7 +216,7 @@ export function SplitEditor({
           {participants.map((p) => {
             const count = value.shareCounts[p.id] ?? 0;
             const setCount = (next: number) =>
-              onChange({
+              edit({
                 ...value,
                 shareCounts: { ...value.shareCounts, [p.id]: Math.max(0, next) },
               });
@@ -213,9 +256,11 @@ export function SplitEditor({
       ) : null}
 
       {amountCents === null ? (
-        <FieldDescription>Enter the amount to preview the split.</FieldDescription>
+        <FieldDescription id={errorId}>Enter the amount to preview the split.</FieldDescription>
       ) : resolved?.error ? (
-        <FieldDescription className="text-destructive">{resolved.error}</FieldDescription>
+        <FieldDescription id={errorId} className={cn(loud && 'text-destructive')}>
+          {resolved.error}
+        </FieldDescription>
       ) : null}
     </Field>
   );

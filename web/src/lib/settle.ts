@@ -1,5 +1,5 @@
 import { friendBalance, groupSettlements, pairwiseForExpense } from './balances';
-import type { SyncData } from './types';
+import type { Expense, SyncData } from './types';
 
 /**
  * One slice of a friend balance: a routed edge inside one group, or the direct
@@ -233,5 +233,144 @@ export function currentSuggestion(
   return {
     cents: Math.abs(entry.netCents),
     direction: entry.netCents > 0 ? 'they_paid' : 'i_paid',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// What the settle sheet shows: per-person prefill, netting, the after-balance
+// ---------------------------------------------------------------------------
+
+/** What the sheet prefills for one person — from THAT person's balance only. */
+export interface SettlePrefill {
+  currency: string;
+  /** Amount that settles the balance exactly; null when there's nothing to settle. */
+  cents: number | null;
+  direction: SettleDirection;
+}
+
+/**
+ * The amount, direction and currency to show for a counterparty. Called on
+ * open and again whenever the person changes, so a suggestion can never carry
+ * over from someone else. Friend mode prefers `currency` but moves to a
+ * currency this person actually has a balance in.
+ */
+export function settlePrefillFor(
+  sync: SyncData,
+  groupId: number | null,
+  counterpartyId: number,
+  currency: string,
+): SettlePrefill {
+  let target = currency;
+  if (groupId === null) {
+    const balances = friendBalance(sync, counterpartyId).filter((b) => b.netCents !== 0);
+    if (!balances.some((b) => b.currency === currency) && balances.length > 0) {
+      const largest = [...balances].sort((a, b) => Math.abs(b.netCents) - Math.abs(a.netCents));
+      target = largest[0].currency;
+    }
+  }
+  const s = currentSuggestion(sync, groupId, counterpartyId, target);
+  return s
+    ? { currency: target, cents: s.cents, direction: s.direction }
+    : { currency: target, cents: null, direction: 'i_paid' };
+}
+
+/** My balance with this person in the sheet's scope; + means they owe me. */
+export function pairBalance(
+  sync: SyncData,
+  groupId: number | null,
+  counterpartyId: number,
+  currency: string,
+): number {
+  const s = currentSuggestion(sync, groupId, counterpartyId, currency);
+  if (!s) return 0;
+  return s.direction === 'they_paid' ? s.cents : -s.cents;
+}
+
+export interface PaymentRow {
+  groupId: number | null;
+  payerId: number;
+  recipientId: number;
+  amountCents: number;
+}
+
+/**
+ * The pair balance once these payment rows are recorded — computed by the
+ * same balance code the app shows afterwards (in group mode that includes the
+ * group's debt simplification), not by subtracting.
+ */
+export function balanceAfterPayment(
+  sync: SyncData,
+  groupId: number | null,
+  counterpartyId: number,
+  currency: string,
+  rows: PaymentRow[],
+): number {
+  const now = new Date().toISOString();
+  const payments: Expense[] = rows.map((r, i) => ({
+    id: -1_000_000 - i,
+    groupId: r.groupId,
+    description: 'Payment',
+    amountCents: r.amountCents,
+    currency,
+    date: now.slice(0, 10),
+    category: 'general',
+    notes: null,
+    isPayment: true,
+    shares: [
+      { userId: r.payerId, paidCents: r.amountCents, owedCents: 0 },
+      { userId: r.recipientId, paidCents: 0, owedCents: r.amountCents },
+    ],
+    createdBy: sync.me.id,
+    createdAt: now,
+    updatedAt: now,
+  }));
+  const after = { ...sync, expenses: [...sync.expenses, ...payments] };
+  return pairBalance(after, groupId, counterpartyId, currency);
+}
+
+export interface Netting {
+  /** What this person owes me across the slices that run my way. */
+  owedToYouCents: number;
+  /** What I owe them across the slices that run their way. */
+  youOweCents: number;
+  /** owedToYou − youOwe (+ = they owe me). */
+  netCents: number;
+}
+
+/**
+ * When balances with one person run both ways across groups, the plain
+ * arithmetic behind the single number: "₹50,985.46 owed to you − ₹3,070.00
+ * you owe = ₹47,915.46". Null when everything runs one way.
+ */
+export function nettingOf(constituents: Constituent[]): Netting | null {
+  let owedToYouCents = 0;
+  let youOweCents = 0;
+  for (const c of constituents) {
+    if (c.cents > 0) owedToYouCents += c.cents;
+    else youOweCents -= c.cents;
+  }
+  if (owedToYouCents === 0 || youOweCents === 0) return null;
+  return { owedToYouCents, youOweCents, netCents: owedToYouCents - youOweCents };
+}
+
+export interface RemainingBalance {
+  /** + they owe me, − I owe them, after recording. */
+  afterCents: number;
+  /** All square afterwards. */
+  settled: boolean;
+  /** The payment was bigger than the debt it pays, so the balance now runs the other way. */
+  reversed: boolean;
+  /** How far past zero the payment went (only when reversed). */
+  overpaidCents: number;
+}
+
+/** Classifies the after-balance for the sentence under the amount. */
+export function remainingBalance(beforeCents: number, afterCents: number): RemainingBalance {
+  const reversed = beforeCents !== 0 && afterCents !== 0 && beforeCents > 0 !== afterCents > 0;
+  return {
+    afterCents,
+    settled: afterCents === 0,
+    reversed,
+    overpaidCents: reversed ? Math.abs(afterCents) : 0,
   };
 }

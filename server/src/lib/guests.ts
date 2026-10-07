@@ -266,9 +266,10 @@ export function mergeGuestInto(guest: UserRow, me: UserRow, group: GroupRow): vo
       .map((r) => r.id);
 
     // Expenses the merge touches get a fresh updated_at, so stale clients
-    // (edit conflicts, settle watermarks) notice the change.
+    // (edit conflicts, settle watermarks) notice the change. Their split
+    // description named the guest, so it is dropped (edits fall back to amounts).
     db.prepare(
-      `UPDATE expenses SET updated_at = ?
+      `UPDATE expenses SET updated_at = ?, split_meta = NULL
        WHERE id IN (SELECT expense_id FROM expense_shares WHERE user_id = ?)`,
     ).run(now, guest.id);
     db.prepare(

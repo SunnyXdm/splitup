@@ -16,6 +16,7 @@ import {
 import { areFriends, groupMemberIds, userName } from './expense';
 import { notifyRecurringDue } from './notify-events';
 import { dueBetween, resolveShares, type Cadence, type Schedule } from './recurrence';
+import { splitMetaProblem, type SplitMeta } from './split-meta';
 import type { PendingOccurrence, RecurringRule } from './wire';
 
 /** The server's own calendar date (YYYY-MM-DD in its local timezone). */
@@ -90,6 +91,7 @@ export function templateExpenseBody(
   } catch {
     throw new HTTPException(400, { message: 'the split does not add up' });
   }
+  const split = splitMetaFromIntent(template.split, amountCents, shares);
   return {
     groupId: rule.group_id,
     description: template.description,
@@ -100,8 +102,31 @@ export function templateExpenseBody(
     notes: template.notes,
     isPayment: false,
     shares,
+    ...(split ? { split } : {}),
     ...(opts.clientKey !== undefined ? { clientKey: opts.clientKey } : {}),
   };
+}
+
+/**
+ * The template's split as an expense split description, when it reproduces
+ * the resolved shares exactly (an "exact" template scaled to another amount
+ * doesn't — that expense then simply carries no description).
+ */
+export function splitMetaFromIntent(
+  intent: RecurringTemplate['split'],
+  amountCents: number,
+  shares: { userId: number; owedCents: number }[],
+): SplitMeta | undefined {
+  const positive = (intent.values ?? []).filter((v) => v.value > 0);
+  const meta: SplitMeta =
+    intent.mode === 'equal'
+      ? { mode: 'equal', participants: [...new Set(intent.participants)].sort((a, b) => a - b) }
+      : {
+          mode: intent.mode === 'exact' ? 'unequal' : intent.mode,
+          participants: positive.map((v) => v.userId),
+          values: Object.fromEntries(positive.map((v) => [String(v.userId), v.value])),
+        };
+  return splitMetaProblem(meta, amountCents, shares) === null ? meta : undefined;
 }
 
 const PARTICIPANTS_CHANGED = (message: string) => new HTTPException(409, { message });

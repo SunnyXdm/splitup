@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_CENTS,
   currencyDigits,
+  formatAmountInput,
   formatMoney,
   isCanonicalAmount,
   localeDecimalSeparator,
@@ -308,5 +309,38 @@ describe('locale-aware separators', () => {
     expect(isCanonicalAmount('12,50')).toBe(false);
     expect(isCanonicalAmount('1,234')).toBe(false);
     expect(isCanonicalAmount('10/2')).toBe(false);
+  });
+});
+
+describe('Indian digit grouping', () => {
+  it('parses lakh/crore grouping as typed or pasted', () => {
+    expect(parseAmountToCents('2,81,152.66', 'INR', 'en-IN')).toBe(28115266);
+    expect(parseAmountToCents('2,81,152.66', 'INR', 'en-US')).toBe(28115266);
+    expect(parseAmountToCents('1,00,000', 'INR', 'en-IN')).toBe(10000000);
+    expect(normalizeAmountText('1,00,00,000', 'en-IN')).toBe('10000000');
+    expect(parseAmountToCents('47,915.46', 'INR', 'en-IN')).toBe(4791546);
+  });
+
+  it('still rejects malformed grouping', () => {
+    expect(parseAmountToCents('2,81,15.66', 'INR', 'en-IN')).toBeNull();
+    expect(parseAmountToCents('281,52,152', 'INR', 'en-IN')).toBeNull();
+    expect(parseAmountToCents('2,8,152', 'INR', 'en-IN')).toBeNull();
+    // A ','-decimal locale never reads commas as grouping.
+    expect(parseAmountToCents('2,81,152', 'EUR', 'de-DE')).toBeNull();
+  });
+
+  it('formats an amount for editing and reads it back exactly', () => {
+    expect(formatAmountInput(28115266, 'INR', 'en-IN')).toBe('2,81,152.66');
+    expect(formatAmountInput(28115266, 'USD', 'en-US')).toBe('281,152.66');
+    expect(formatAmountInput(28115266, 'EUR', 'de-DE')).toBe('281.152,66');
+    expect(formatAmountInput(500, 'JPY', 'en-US')).toBe('500');
+    for (const [cents, locale] of [
+      [12345678, 'en-IN'],
+      [99, 'fr-FR'],
+      [100000000, 'de-DE'],
+    ] as const) {
+      const text = formatAmountInput(cents, 'EUR', locale);
+      expect(parseAmountToCents(text, 'EUR', locale)).toBe(cents);
+    }
   });
 });

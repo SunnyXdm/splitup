@@ -9,6 +9,9 @@ import type {
   UserRow,
 } from '../db';
 import { CATEGORIES, SETTLEMENT_METHODS } from '../validate';
+import { parseSplitMeta, type SplitMeta } from './split-meta';
+
+export type { SplitMeta };
 
 /** Wire shapes — mirror web/src/lib/types.ts exactly. */
 export type Category = (typeof CATEGORIES)[number];
@@ -59,7 +62,8 @@ export interface Expense {
   createdAt: string;
   updatedAt: string;
   /** The settle-up batch this payment row belongs to; null for everything else. */
-  settlementBatchId: number | null;
+  settlementBatchId: number | null;  /** How the split was entered; absent for payments and older expenses. */
+  split?: SplitMeta;
 }
 
 export type SettlementMethod = (typeof SETTLEMENT_METHODS)[number];
@@ -264,7 +268,13 @@ export const toExpense = (r: ExpenseRow, shares: ShareRow[]): Expense => ({
   createdAt: r.created_at,
   updatedAt: r.updated_at,
   settlementBatchId: r.settlement_batch_id ?? null,
+  ...splitField(r.split_meta),
 });
+
+const splitField = (raw: string | null | undefined): { split?: SplitMeta } => {
+  const split = parseSplitMeta(raw ?? null);
+  return split ? { split } : {};
+};
 
 export const toSettlementBatch = (r: SettlementBatchRow, rows: number[]): SettlementBatch => ({
   id: r.id,

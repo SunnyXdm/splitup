@@ -6,13 +6,21 @@ import { CategoryIcon } from '@/components/common/CategoryIcon';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { Button } from '@/components/ui/button';
 import { FieldDescription } from '@/components/ui/field';
-import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
 import { Spinner } from '@/components/ui/spinner';
 import { errorMessage, isKeyReused, isRemovedSince } from '@/lib/api';
 import { formatDateSafe } from '@/lib/dates';
 import { currentDrafts, removeDraft, useDrafts } from '@/lib/draft-store';
 import { draftsInScope, validateDraft, type Draft, type DraftScope } from '@/lib/drafts';
 import { formatMoney, parseAmountToCents } from '@/lib/money';
+import { properName } from '@/lib/names';
 import { SYNC_KEY, useCreateExpense, useSyncData } from '@/lib/queries';
 import type { SyncData } from '@/lib/types';
 import { useDraftsUi } from './drafts-ui';
@@ -36,12 +44,16 @@ export function DraftsChip({ scope, className }: { scope: DraftScope; className?
   );
 }
 
+/** Same wording as the form's scope field: "In Flat 4B" / "Direct with Darshna Gupta". */
 function scopeLabel(draft: Draft, sync: SyncData): string {
   const { groupId, friendId } = draft.values;
-  if (groupId !== null) return sync.groups.find((g) => g.id === groupId)?.name ?? 'A group';
-  if (friendId === null) return 'No friend picked';
+  if (groupId !== null) {
+    const name = sync.groups.find((g) => g.id === groupId)?.name;
+    return name ? `In ${name}` : 'In a group';
+  }
+  if (friendId === null) return 'No group or friend chosen';
   const name = sync.users.find((u) => u.id === friendId)?.name ?? draft.names[friendId];
-  return name ? `With ${name}` : 'With a friend';
+  return name ? `Direct with ${properName(name)}` : 'Direct with a friend';
 }
 
 /**
@@ -63,7 +75,7 @@ export default function DraftsSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="bottom"
-        className="mx-auto max-h-[85dvh] w-full max-w-xl rounded-t-[28px]"
+        className="mx-auto max-h-[85dvh] w-full max-w-xl gap-0 rounded-t-card"
       >
         <DraftsBody scope={scope} onOpenChange={onOpenChange} />
       </SheetContent>
@@ -139,17 +151,17 @@ function DraftsBody({
 
   return (
     <>
-      <SheetHeader className="pb-0">
+      <SheetHeader className="pr-14">
         <SheetTitle className="text-xl">Drafts</SheetTitle>
-        <p className="text-sm text-muted-foreground">
+        <SheetDescription>
           Saved on this device only — they don’t change any balances until you add them.
-        </p>
+        </SheetDescription>
       </SheetHeader>
       <div className="min-h-0 flex-1 overflow-y-auto px-4">
         {list.length === 0 ? (
           <FieldDescription className="py-6 text-center">No drafts left.</FieldDescription>
         ) : (
-          <ul className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
+          <ul className="flex flex-col divide-y divide-border/60 rounded-card bg-muted/60 px-4">
             {list.map((d) => {
               const check = checks.get(d.id);
               const cents = parseAmountToCents(d.values.amountRaw, d.values.currency);
@@ -161,26 +173,26 @@ function DraftsBody({
                     onClick={() => openDraft(d.id)}
                     className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
                   >
-                    <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-background">
+                    <span className="flex size-10 shrink-0 items-center justify-center self-start rounded-full bg-background">
                       <CategoryIcon
                         category={d.values.category}
                         className="size-4 text-foreground/70"
                       />
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="truncate font-medium">
+                      <span className="line-clamp-2 font-medium break-words">
                         {d.values.description || 'Untitled'}
                       </span>
-                      <span className="truncate text-xs text-muted-foreground">
+                      <span className="text-sm text-muted-foreground">
                         {formatDateSafe(d.values.date, 'MMM d', '—')} · {scopeLabel(d, sync)}
                       </span>
                       {check && !check.ok ? (
-                        <span className="flex items-center gap-1 text-xs text-owing">
-                          <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
-                          <span className="truncate">Needs review · {check.issues[0]}</span>
+                        <span className="flex items-start gap-1.5 text-sm text-warning">
+                          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                          <span>Needs review · {check.issues[0]}</span>
                         </span>
                       ) : (
-                        <span className="text-xs text-muted-foreground">Ready to add</span>
+                        <span className="text-sm text-muted-foreground">Ready to add</span>
                       )}
                     </span>
                     <span className="shrink-0 text-sm font-medium tabular-nums">
@@ -210,12 +222,13 @@ function DraftsBody({
         ) : null}
         {list.length > 1 ? (
           <Button
-            className="h-12 w-full rounded-full"
+            size="cta"
+            className="w-full"
             disabled={!online || !allReady || adding}
             onClick={() => void addAll()}
           >
             {adding ? <Spinner data-icon="inline-start" /> : null}
-            Add all {list.length}
+            Add all {list.length} expenses
           </Button>
         ) : null}
       </SheetFooter>

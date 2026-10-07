@@ -125,8 +125,8 @@ export function createExpense(
     const info = db
       .prepare(
         `INSERT INTO expenses (group_id, description, amount_cents, currency, date, category, notes,
-           is_payment, created_by, created_at, updated_at, client_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           is_payment, created_by, created_at, updated_at, client_key, split_meta)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         body.groupId,
@@ -141,6 +141,7 @@ export function createExpense(
         now,
         now,
         body.clientKey ?? null,
+        body.split ? JSON.stringify(body.split) : null,
       );
     const id = Number(info.lastInsertRowid);
     insertShares(id, body.shares);

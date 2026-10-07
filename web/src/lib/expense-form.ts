@@ -13,10 +13,13 @@ import {
 import {
   defaultSplitState,
   resolveSplit,
-  splitStateFromShares,
+  splitMetaFromState,
+  splitStateFromExpense,
+  withSplitMode,
   type SplitState,
 } from '@/components/expense/split-state';
-import { parseAmountToCents } from './money';
+import { formatMoney, parseAmountToCents, splitEqual } from './money';
+import { displayName, properName } from './names';
 import type { Category, Expense, ExpenseInput, ExpenseShare, SyncData, User } from './types';
 
 /**
@@ -54,7 +57,11 @@ export function participantIdsFor(values: ExpenseFormValues, sync: SyncData): nu
   return values.friendId !== null ? [meId, values.friendId] : [meId];
 }
 
-/** A blank form for a scope (the "Add expense" starting point). */
+/**
+ * A blank form for a scope (the "Add expense" starting point). Without a
+ * group or friend the scope stays unchosen — the form asks for it first and
+ * never silently picks someone.
+ */
 export function emptyFormValues(
   sync: SyncData,
   scope: { groupId: number | null; friendId?: number | null },
@@ -63,7 +70,7 @@ export function emptyFormValues(
   const meId = sync.me.id;
   const group =
     scope.groupId !== null ? sync.groups.find((g) => g.id === scope.groupId) : undefined;
-  const friendId = scope.groupId !== null ? null : (scope.friendId ?? sync.friendIds[0] ?? null);
+  const friendId = scope.groupId !== null ? null : (scope.friendId ?? null);
   const participantIds = group ? group.memberIds : friendId !== null ? [meId, friendId] : [meId];
   return {
     groupId: scope.groupId,
@@ -80,7 +87,10 @@ export function emptyFormValues(
   };
 }
 
-/** Edit mode: the stored expense as form values (unequal split = exact stored amounts). */
+/**
+ * Edit mode: the stored expense as form values — the split as it was entered
+ * when the expense carries a description of it, else detected from amounts.
+ */
 export function formValuesFromExpense(
   expense: Expense,
   meId: number,
@@ -100,7 +110,7 @@ export function formValuesFromExpense(
     notes: expense.notes ?? '',
     showNotes: Boolean(expense.notes),
     payer: payerStateFromShares(expense.shares, meId, expense.currency),
-    split: splitStateFromShares(expense.shares, participantIds, expense.currency),
+    split: splitStateFromExpense(expense, participantIds).state,
   };
 }
 
@@ -120,10 +130,11 @@ function stableJson(value: unknown): string {
 }
 
 export interface FormErrors {
+  /** No group or friend chosen yet. */
+  scope: string | null;
   description: string | null;
   amount: string | null;
   date: string | null;
-  friend: string | null;
   paid: string | null;
   split: string | null;
 }
@@ -148,13 +159,11 @@ export function checkFormValues(
   const splitRes =
     amountCents !== null ? resolveSplit(values.split, participants, amountCents, currency) : null;
   const errors: FormErrors = {
+    scope:
+      values.groupId === null && values.friendId === null ? 'Choose a group or friend.' : null,
     description: values.description.trim() === '' ? 'Add a description.' : null,
     amount: amountCents === null ? 'Enter a valid amount.' : null,
     date: values.date === '' ? 'Pick a date.' : null,
-    friend:
-      values.groupId === null && values.friendId === null
-        ? 'Add a friend first — expenses outside a group are shared with a friend.'
-        : null,
     paid: paidRes?.error ?? null,
     split: splitRes?.error ?? null,
   };
@@ -186,6 +195,12 @@ export function checkFormValues(
       }))
       .filter((s) => s.paidCents > 0 || s.owedCents > 0);
   }
+  const split = splitMetaFromState(
+    values.split,
+    participants.map((p) => p.id),
+    amountCents,
+    shares,
+  );
   return {
     amountCents,
     errors,
@@ -199,6 +214,7 @@ export function checkFormValues(
       notes: values.showNotes && values.notes.trim() !== '' ? values.notes.trim() : null,
       isPayment: false,
       shares,
+      ...(split ? { split } : {}),
     },
   };
 }
@@ -300,11 +316,10 @@ export function revalidateFormValues(
       return { values, notes, blocking: null };
     }
     notes.push(`Removed ${nameOf(values.friendId)} — no longer your friend`);
-    const fallbackFriend = sync.friendIds[0] ?? null;
     notes.push(
-      fallbackFriend === null
+      sync.friendIds.length === 0 && sync.groups.length === 0
         ? 'Add a friend to split this with'
-        : 'Choose who to split with — the split was reset to equal',
+        : 'Choose a group or friend — the split was reset to equal',
     );
     return {
       values: {
@@ -370,4 +385,147 @@ export function revalidateFormValues(
     }
   }
   return { values: { ...next, payer, split }, notes, blocking: null };
+}
+
+// ---------------------------------------------------------------------------
+// Scope changes and the one-line summary
+// ---------------------------------------------------------------------------
+
+export type ScopeChoice =
+  { kind: 'group'; groupId: number } | { kind: 'friend'; friendId: number };
+
+/** The form's current destination, or null while none is chosen. */
+export function scopeChoiceOf(
+  values: Pick<ExpenseFormValues, 'groupId' | 'friendId'>,
+): ScopeChoice | null {
+  if (values.groupId !== null) return { kind: 'group', groupId: values.groupId };
+  if (values.friendId !== null) return { kind: 'friend', friendId: values.friendId };
+  return null;
+}
+
+export interface ScopeChange {
+  values: ExpenseFormValues;
+  /** Set when the currency changed with it — said out loud, never silent. */
+  currencyNotice: string | null;
+}
+
+/**
+ * Moves an in-progress expense to another group / friend. Description, date,
+ * category and notes stay; who paid and the split are re-checked against the
+ * new people (a payer who isn't there falls back to you; the split keeps its
+ * method over the new people). A group's currency wins — and that change is
+ * reported, because the same digits in another currency are not a conversion.
+ */
+export function applyScope(
+  values: ExpenseFormValues,
+  choice: ScopeChoice,
+  sync: SyncData,
+): ScopeChange {
+  const meId = sync.me.id;
+  const group =
+    choice.kind === 'group' ? sync.groups.find((g) => g.id === choice.groupId) : undefined;
+  const groupId = choice.kind === 'group' ? choice.groupId : null;
+  const friendId = choice.kind === 'friend' ? choice.friendId : null;
+  const ids = group ? group.memberIds : friendId !== null ? [meId, friendId] : [meId];
+  const currency = group?.currency ?? values.currency;
+  const amountCents = parseAmountToCents(values.amountRaw, currency);
+  let currencyNotice: string | null = null;
+  if (currency !== values.currency) {
+    const where = group?.name ?? 'This group';
+    currencyNotice =
+      amountCents !== null
+        ? `${where} uses ${currency}, so the amount is now ${formatMoney(amountCents, currency)} — it wasn’t converted from ${values.currency}.`
+        : `${where} uses ${currency}, so amounts are in ${currency} now.`;
+  }
+  const payer =
+    values.payer.mode === 'single' && ids.includes(values.payer.payerId)
+      ? values.payer
+      : defaultPayerState(meId);
+  const split =
+    values.split.mode === 'equal'
+      ? defaultSplitState(ids)
+      : withSplitMode(defaultSplitState(ids), values.split.mode, ids, amountCents, currency);
+  return {
+    values: { ...values, groupId, friendId, currency, payer, split },
+    currencyNotice,
+  };
+}
+
+/** "In Flat 4B" / "Direct with Darshna Gupta" — never just a name. */
+export function scopeTitle(choice: ScopeChoice, sync: SyncData): string {
+  if (choice.kind === 'group') {
+    const g = sync.groups.find((x) => x.id === choice.groupId);
+    return g ? `In ${g.name}` : 'In a group';
+  }
+  const u = sync.users.find((x) => x.id === choice.friendId);
+  return u ? `Direct with ${properName(u.name)}` : 'Direct with a friend';
+}
+
+export interface FormSummary {
+  /** "Paid by you" */
+  paidBy: string;
+  /** "Equally between 4 people" */
+  split: string;
+  /** "₹466.00 each" / "your share ₹300.00" — once the amount is known. */
+  detail: string | null;
+}
+
+/** The collapsed "Paid by you · Equally between 4 people · ₹466 each" line. */
+export function formSummary(
+  values: ExpenseFormValues,
+  participants: User[],
+  meId: number,
+  amountCents: number | null,
+): FormSummary {
+  const { payer, split, currency } = values;
+  const name = (id: number) => {
+    const u = participants.find((p) => p.id === id);
+    if (!u) return 'someone';
+    return displayName({ id: u.id, name: properName(u.name) }, meId, { case: 'object' });
+  };
+  let paidBy: string;
+  if (payer.mode === 'single') {
+    paidBy = `Paid by ${name(payer.payerId)}`;
+  } else {
+    const n = Object.values(payer.multiRaw).filter(
+      (raw) => (parseShareInput(raw, currency) ?? 0) > 0,
+    ).length;
+    paidBy = n > 1 ? `Paid by ${n} people` : 'Paid by several people';
+  }
+  let text: string;
+  let detail: string | null = null;
+  switch (split.mode) {
+    case 'equal': {
+      const ids = participants.map((p) => p.id).filter((id) => split.equalChecked.includes(id));
+      const others = ids.filter((id) => id !== meId);
+      if (ids.length === 0) text = 'Nobody to split with yet';
+      else if (ids.length === 1) text = `All owed by ${name(ids[0])}`;
+      else if (ids.length === 2 && others.length === 1) {
+        text = `Equally between you and ${name(others[0])}`;
+      } else text = `Equally between ${ids.length} people`;
+      if (amountCents !== null && ids.length > 1) {
+        const parts = splitEqual(amountCents, ids);
+        const even = parts.every((p) => p.owedCents === parts[0].owedCents);
+        const cents = even ? parts[0].owedCents : Math.round(amountCents / ids.length);
+        const each = formatMoney(cents, currency);
+        detail = `${even ? '' : 'about '}${each} each`;
+      }
+      break;
+    }
+    case 'unequal':
+      text = 'Unequal amounts';
+      break;
+    case 'percent':
+      text = 'By percentage';
+      break;
+    case 'shares':
+      text = 'By shares';
+      break;
+  }
+  if (detail === null && amountCents !== null && split.mode !== 'equal') {
+    const res = resolveSplit(split, participants, amountCents, currency);
+    const mine = res.owed?.find((o) => o.userId === meId)?.owedCents;
+    if (mine !== undefined) detail = `your share ${formatMoney(mine, currency)}`;
+  }
+  return { paidBy, split: text, detail };
 }

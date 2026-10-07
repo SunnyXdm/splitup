@@ -1,23 +1,19 @@
 import { centsToInput, todayISO } from '@/components/expense/money-input';
 import { payerStateFromShares } from '@/components/expense/payer-state';
-import {
-  defaultSplitState,
-  splitStateFromShares,
-  type SplitState,
-} from '@/components/expense/split-state';
+import { splitStateFromExpense, type SplitState } from '@/components/expense/split-state';
 import {
   emptyFormValues,
   revalidateFormValues,
   type ExpenseFormValues,
   type Revalidation,
 } from './expense-form';
-import { splitEqual } from './money';
 import type { Expense, ExpenseShare, SyncData } from './types';
 
 /**
  * Split state for repeating stored shares: stored owedCents are final
  * amounts, so they prefill as an exact (unequal) split — unless they are
  * exactly what an equal split would produce, in which case it stays "equal".
+ * (An expense that carries its split description repeats that instead.)
  */
 export function repeatSplitState(
   shares: ExpenseShare[],
@@ -25,16 +21,7 @@ export function repeatSplitState(
   amountCents: number,
   currency: string,
 ): SplitState {
-  const owers = shares
-    .filter((s) => s.owedCents > 0)
-    .map((s) => s.userId)
-    .sort((a, b) => a - b);
-  const equal = splitEqual(amountCents, owers);
-  const isEqual =
-    owers.length > 0 &&
-    equal.every((o) => shares.find((s) => s.userId === o.userId)?.owedCents === o.owedCents);
-  if (isEqual) return { ...defaultSplitState(participantIds), equalChecked: owers };
-  return splitStateFromShares(shares, participantIds, currency);
+  return splitStateFromExpense({ shares, amountCents, currency }, participantIds).state;
 }
 
 /**
@@ -84,7 +71,7 @@ export function buildRepeatPrefill(
     notes: expense.notes ?? '',
     showNotes: Boolean(expense.notes),
     payer: payerStateFromShares(expense.shares, meId, expense.currency),
-    split: repeatSplitState(expense.shares, participantIds, expense.amountCents, expense.currency),
+    split: splitStateFromExpense(expense, participantIds).state,
   };
   return revalidateFormValues(values, sync);
 }
