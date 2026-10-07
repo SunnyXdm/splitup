@@ -1,11 +1,11 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router';
 import { MutationCache, QueryClient } from '@tanstack/react-query';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { del, get, set } from 'idb-keyval';
 import { ThemeProvider } from '@/components/theme-provider';
+import TransitionRouter from '@/components/layout/TransitionRouter';
 import { Toaster } from '@/components/ui/sonner';
 import { ApiError } from '@/lib/api';
 import { capturePendingInviteFromUrl } from '@/lib/pending-invite';
@@ -80,9 +80,9 @@ createRoot(document.getElementById('root')!).render(
           },
         }}
       >
-        <BrowserRouter>
+        <TransitionRouter>
           <App />
-        </BrowserRouter>
+        </TransitionRouter>
         <Toaster position="top-center" />
       </PersistQueryClientProvider>
     </ThemeProvider>

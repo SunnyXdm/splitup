@@ -106,7 +106,7 @@ export default function FriendDetail() {
               <div key={b.currency} className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <p className="text-xl font-medium tracking-tight">
                   {b.netCents > 0 ? `${friend.name} owes you ` : 'You owe '}
-                  <MoneyText signed cents={b.netCents} currency={b.currency} />
+                  <MoneyText signed animate cents={b.netCents} currency={b.currency} />
                 </p>
                 <Button
                   variant="ghost"

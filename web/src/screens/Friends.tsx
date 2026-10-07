@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { Check, ChevronRight, Clock, HeartHandshake, Link2, UserRoundPlus, X } from 'lucide-react';
@@ -24,11 +24,11 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
+import { AnimatedMoney } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { ApiError, errorMessage } from '@/lib/api';
 import { friendBalance } from '@/lib/balances';
-import { formatMoney } from '@/lib/money';
 import {
   useAcceptFriendRequest,
   useAddFriend,
@@ -37,6 +37,9 @@ import {
   useSyncData,
 } from '@/lib/queries';
 import type { FriendRequests, User } from '@/lib/types';
+import { EntranceScope } from '@/components/common/Entrance';
+import { useEnterItem } from '@/lib/motion';
+import { cn } from '@/lib/utils';
 
 export default function Friends() {
   const { data: sync } = useSyncData();
@@ -86,11 +89,11 @@ export default function Friends() {
           </EmptyContent>
         </Empty>
       ) : (
-        <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
-          {friends.map((u) => {
+        <FriendList>
+          {friends.map((u, i) => {
             const entries = friendBalance(sync, u.id).filter((b) => b.netCents !== 0);
             return (
-              <Link key={u.id} to={`/friends/${u.id}`} className="flex min-h-16 items-center gap-3 py-3">
+              <FriendRow key={u.id} index={i} to={`/friends/${u.id}`}>
                 <UserAvatar user={u} />
                 <span className="min-w-0 flex-1 truncate font-medium">{u.name}</span>
                 <span className="flex shrink-0 flex-col items-end gap-0.5">
@@ -100,23 +103,47 @@ export default function Friends() {
                     entries.map((b) => (
                       <span
                         key={b.currency}
-                        className={`text-sm font-medium tabular-nums ${b.netCents > 0 ? 'text-owed' : 'text-owing'}`}
+                        className={`text-sm font-medium tabular-nums transition-colors duration-(--dur-base) ${b.netCents > 0 ? 'text-owed' : 'text-owing'}`}
                       >
                         {b.netCents > 0 ? 'owes you ' : 'you owe '}
-                        {formatMoney(Math.abs(b.netCents), b.currency)}
+                        <AnimatedMoney cents={b.netCents} currency={b.currency} />
                       </span>
                     ))
                   )}
                 </span>
                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-              </Link>
+              </FriendRow>
             );
           })}
-        </div>
+        </FriendList>
       )}
 
       <AddFriendDialog open={addOpen} onOpenChange={setAddOpen} />
     </div>
+  );
+}
+
+/** The friends card; its rows stagger in on the screen's first visit. */
+function FriendList({ children }: { children: ReactNode }) {
+  return (
+    <EntranceScope id="friends">
+      <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
+        {children}
+      </div>
+    </EntranceScope>
+  );
+}
+
+function FriendRow({ index, to, children }: { index: number; to: string; children: ReactNode }) {
+  const enter = useEnterItem(index);
+  return (
+    <Link
+      to={to}
+      className={cn('flex min-h-16 items-center gap-3 py-3', enter.className)}
+      style={enter.style}
+    >
+      {children}
+    </Link>
   );
 }
 

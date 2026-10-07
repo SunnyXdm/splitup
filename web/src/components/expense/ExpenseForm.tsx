@@ -82,6 +82,7 @@ import ExpenseHistorySheet from './ExpenseHistorySheet';
 import { centsToInput, currencySymbol, todayISO } from './money-input';
 import { PayerPicker, defaultPayerState } from './PayerPicker';
 import { SplitEditor, defaultSplitState } from './SplitEditor';
+import { shakeInvalidFields } from '@/lib/motion';
 
 export interface ExpenseFormProps {
   open: boolean;
@@ -454,6 +455,12 @@ function FormFields({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scanAbort = useRef<AbortController | null>(null);
   const [scanning, setScanning] = useState(false);
+  // Object URL of the photo being read, shown under the scan line.
+  const [scanPhoto, setScanPhoto] = useState<string | null>(null);
+  useEffect(() => {
+    if (!scanPhoto) return;
+    return () => URL.revokeObjectURL(scanPhoto);
+  }, [scanPhoto]);
   const [scanReview, setScanReview] = useState<ScanReview | null>(null);
   useEffect(() => () => scanAbort.current?.abort(), []);
 
@@ -463,6 +470,7 @@ function FormFields({
     const ctrl = new AbortController();
     scanAbort.current = ctrl;
     setScanning(true);
+    setScanPhoto(URL.createObjectURL(file));
     setScanReview(null);
     try {
       let image: string;
@@ -500,6 +508,7 @@ function FormFields({
       if (scanAbort.current === ctrl) {
         scanAbort.current = null;
         setScanning(false);
+        setScanPhoto(null);
       }
     }
   };
@@ -508,6 +517,7 @@ function FormFields({
     scanAbort.current?.abort();
     scanAbort.current = null;
     setScanning(false);
+    setScanPhoto(null);
   };
 
   const participantIds = init.participantIds ?? participantIdsFor(values, sync);
@@ -552,10 +562,13 @@ function FormFields({
   const today = todayISO();
   const plan = repeat !== 'none' && values.date ? repeatPlan(values.date, repeat, today) : null;
 
-  const handleSave = () => {
+  const handleSave = (e?: React.MouseEvent<HTMLElement>) => {
     setAttempted(true);
     const input = check.input;
-    if (!input) return;
+    if (!input) {
+      shakeInvalidFields(e?.currentTarget);
+      return;
+    }
     if (savesAsDraft) {
       if (draft) {
         const current = currentDrafts(me.id).find((d) => d.id === draft.id) ?? draft;
@@ -778,7 +791,7 @@ function FormFields({
                 }}
               />
               {scanning ? (
-                <ScanningCard onCancel={cancelScan} />
+                <ScanningCard photo={scanPhoto} onCancel={cancelScan} />
               ) : scanReview ? (
                 <ScanReviewBanner
                   review={scanReview}
@@ -1093,31 +1106,37 @@ function RepeatField({
   );
 }
 
-function ScanningCard({ onCancel }: { onCancel: () => void }) {
+function ScanningCard({ photo, onCancel }: { photo: string | null; onCancel: () => void }) {
   return (
     <div
       role="status"
       aria-live="polite"
-      className="flex flex-col gap-3 rounded-[20px] border border-border bg-card p-4"
+      className="flex items-center gap-4 rounded-[20px] border border-border bg-card p-3 pr-4"
     >
-      <div className="flex items-center gap-2 text-sm font-medium">
-        <Spinner />
-        Reading receipt…
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="ml-auto rounded-full"
-          onClick={onCancel}
-        >
-          Cancel
-        </Button>
+      {/* The captured photo with a scan line sweeping down it (transform only). */}
+      <div
+        aria-hidden="true"
+        className="relative h-20 w-16 shrink-0 overflow-hidden rounded-xl bg-muted"
+      >
+        {photo ? <img src={photo} alt="" className="size-full object-cover" /> : null}
+        <div className="absolute inset-x-0 top-0 h-6 animate-[scan-sweep_1.8s_ease-in-out_infinite] [--scan-travel:80px]">
+          <div className="h-full bg-linear-to-b from-transparent to-signal/35" />
+          <div className="h-0.5 bg-signal shadow-[0_0_8px_var(--signal)]" />
+        </div>
       </div>
-      <div className="flex flex-col gap-2" aria-hidden="true">
-        <Skeleton className="h-3 w-2/3 rounded-full" />
-        <Skeleton className="h-3 w-1/2 rounded-full" />
-        <Skeleton className="h-3 w-3/4 rounded-full" />
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <Spinner />
+          Reading receipt…
+        </div>
+        <div className="flex flex-col gap-2" aria-hidden="true">
+          <Skeleton className="h-2.5 w-2/3 rounded-full" />
+          <Skeleton className="h-2.5 w-1/2 rounded-full" />
+        </div>
       </div>
+      <Button type="button" variant="ghost" size="sm" className="rounded-full" onClick={onCancel}>
+        Cancel
+      </Button>
     </div>
   );
 }

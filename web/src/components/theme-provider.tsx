@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { flushSync } from 'react-dom';
+import { THEME_SWEEP_CLASS, clearRouteTransition } from '@/lib/view-transitions';
 
 export type Theme = 'light' | 'dark' | 'amoled' | 'system';
 export type DarkVariant = 'dark' | 'amoled';
@@ -153,6 +154,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // The sweep's ::view-transition styles are scoped to this class, so
+      // route transitions (which share the API) never pick them up.
+      clearRouteTransition();
+      const root = document.documentElement;
+      root.classList.add(THEME_SWEEP_CLASS);
       const transition = document.startViewTransition(apply);
       const state = {
         transition,
@@ -187,7 +193,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         })
         .catch(() => {});
       void transition.finished.finally(() => {
-        if (sweep.current === state) sweep.current = null;
+        // A newer sweep (after skipTransition) owns the class from here on.
+        if (sweep.current !== state) return;
+        sweep.current = null;
+        root.classList.remove(THEME_SWEEP_CLASS);
       });
     },
     [resolved, theme, darkVariant],

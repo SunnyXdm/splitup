@@ -402,6 +402,7 @@ export default function GroupDetail() {
                             </span>
                             <MoneyText
                               signed
+                              animate
                               cents={b.netCents}
                               currency={b.currency}
                               className="text-sm font-medium"

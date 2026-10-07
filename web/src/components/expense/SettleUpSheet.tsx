@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useQueryClient } from '@tanstack/react-query';
@@ -41,6 +41,7 @@ import {
 import { SETTLEMENT_METHODS } from '@/lib/settlement-batches';
 import type { SettlementMethod, SyncData, User } from '@/lib/types';
 import { centsToInput, currencySymbol, todayISO } from './money-input';
+import { prefersReducedMotion, shakeInvalidFields } from '@/lib/motion';
 
 export type SettleDirection = 'i_paid' | 'they_paid';
 
@@ -132,6 +133,13 @@ function SettleBody({
   const [method, setMethod] = useState<SettlementMethod | null>(null);
   const [reference, setReference] = useState('');
   const [note, setNote] = useState('');
+  // Success: the check plays over the sheet, then it closes.
+  const [recorded, setRecorded] = useState(false);
+  useEffect(() => {
+    if (!recorded) return;
+    const timer = setTimeout(() => onOpenChange(false), SUCCESS_HOLD_MS);
+    return () => clearTimeout(timer);
+  }, [recorded, onOpenChange]);
 
   // Friend mode can hold balances in several currencies; each is settled in
   // its own run of the sheet, so offer a switcher when more than one exists.
@@ -228,12 +236,14 @@ function SettleBody({
   const counterpartyError = counterparty === null ? 'Choose who you settled with.' : null;
 
   const celebrate = () => {
-    toast('Payment recorded');
+    const reduced = prefersReducedMotion();
+    // The success check says it in the sheet; the toast covers reduced motion.
+    if (reduced) toast('Payment recorded');
     // The delight moment: this payment cleared the suggested balance exactly.
     if (
       suggestion !== undefined &&
       amountCents === suggestion &&
-      !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      !reduced
     ) {
       void confetti({
         particleCount: 90,
@@ -244,7 +254,8 @@ function SettleBody({
         disableForReducedMotion: true,
       });
     }
-    onOpenChange(false);
+    if (reduced) onOpenChange(false);
+    else setRecorded(true);
   };
 
   // 409 'stale': balances moved under us (someone recorded or edited
@@ -261,9 +272,14 @@ function SettleBody({
     if (next) setDirection(next.direction);
   };
 
-  const handleSave = () => {
+  const handleSave = (e: React.MouseEvent<HTMLElement>) => {
     setAttempted(true);
-    if (amountCents === null || counterparty === null || writePending) return;
+    if (recorded) return;
+    if (amountCents === null || counterparty === null) {
+      shakeInvalidFields(e.currentTarget);
+      return;
+    }
+    if (writePending) return;
     if (groupId === null && settleRows.length === 0) return;
 
     const callbacks = {
@@ -358,6 +374,7 @@ function SettleBody({
 
   return (
     <>
+      {recorded ? <SuccessCheck /> : null}
       <SheetHeader className="pb-0">
         <SheetTitle className="text-xl">Settle up</SheetTitle>
       </SheetHeader>
@@ -590,5 +607,42 @@ function SettleBody({
         </Button>
       </SheetFooter>
     </>
+  );
+}
+
+const SUCCESS_HOLD_MS = 900;
+
+/**
+ * Covers the sheet once a payment is recorded: the ring pops in, then the tick
+ * draws itself (stroke-dashoffset). Transform/opacity plus one SVG stroke.
+ */
+function SuccessCheck() {
+  return (
+    <div
+      role="status"
+      className="absolute inset-0 z-20 flex animate-[route-fade-in_var(--dur-base)_ease-out_both] flex-col items-center justify-center gap-4 rounded-[inherit] bg-popover"
+    >
+      <svg
+        viewBox="0 0 64 64"
+        className="size-20 animate-[check-pop_var(--dur-slow)_cubic-bezier(0.34,1.56,0.64,1)_both] text-owed"
+        aria-hidden="true"
+      >
+        <circle cx="32" cy="32" r="30" className="fill-current opacity-15" />
+        <circle cx="32" cy="32" r="30" fill="none" stroke="currentColor" strokeWidth="2.5" />
+        <path
+          d="M20 33.5 28.5 42 45 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          pathLength={1}
+          strokeDasharray={1}
+          strokeDashoffset={1}
+          className="animate-[check-draw_var(--dur-slow)_var(--ease-out-expo)_160ms_forwards]"
+        />
+      </svg>
+      <p className="text-lg font-medium tracking-tight">Payment recorded</p>
+    </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { Archive, ArrowUpRight, ChartPie, ChevronRight, Plus, UsersRound } from 'lucide-react';
@@ -24,8 +24,8 @@ import { GROUP_EMOJI } from '@/components/group/group-emoji';
 import { DueToAddCard } from '@/components/recurring/DueToAdd';
 import GroupFormFields, { type GroupFormValues } from '@/components/group/GroupFormFields';
 import { MyGroupBalance } from '@/components/group/MyGroupBalance';
+import { AnimatedMoney } from '@/components/common/MoneyText';
 import { useOnline } from '@/components/layout/OfflineBanner';
-import { NumberTicker } from '@/components/ui/number-ticker';
 import { myOpenGroupBalances, partitionGroups } from '@/lib/archive';
 import {
   myGrossBalances,
@@ -40,6 +40,9 @@ import { errorMessage } from '@/lib/api';
 import { useCreateGroup, useSyncData } from '@/lib/queries';
 import type { Group, SyncData } from '@/lib/types';
 import { useOverlayNavigate } from '@/lib/use-history-dismiss';
+import { EntranceScope } from '@/components/common/Entrance';
+import { useEnterItem, useEntrance } from '@/lib/motion';
+import { cn } from '@/lib/utils';
 
 export default function Home() {
   const { data: sync } = useSyncData();
@@ -77,7 +80,9 @@ export default function Home() {
         ) : (
           <>
             {active.length > 0 ? (
-              <GroupList sync={sync} groups={active} />
+              <EntranceScope id="home-groups">
+                <GroupList sync={sync} groups={active} />
+              </EntranceScope>
             ) : (
               <p className="px-1 text-sm text-muted-foreground">
                 All your groups are archived.
@@ -101,6 +106,9 @@ export default function Home() {
  * orbital arc and a white satellite circle docked on its edge (→ /activity).
  */
 function BalanceHero({ totals, gross }: { totals: CurrencyAmount[]; gross: GrossBalance[] }) {
+  // The count-up is a first-visit moment; later visits show the number and
+  // only animate when it actually changes.
+  const countUp = useEntrance('home-hero');
   // Currencies whose per-person balances are open but cancel out overall
   // (owe B 100, C owes me 100): zero net is NOT "settled up".
   const offsetting = gross.filter((g) => !totals.some((t) => t.currency === g.currency));
@@ -140,7 +148,12 @@ function BalanceHero({ totals, gross }: { totals: CurrencyAmount[]; gross: Gross
                   }
                 >
                   {t.netCents > 0 ? 'You are owed ' : 'You owe '}
-                  <MoneyTicker cents={Math.abs(t.netCents)} currency={t.currency} />
+                  <AnimatedMoney
+                    cents={Math.abs(t.netCents)}
+                    currency={t.currency}
+                    animateOnMount={countUp}
+                    className="inline-block"
+                  />
                 </p>
               ))}
               {offsetting.map((g) => (
@@ -167,22 +180,12 @@ function BalanceHero({ totals, gross }: { totals: CurrencyAmount[]; gross: Gross
       <Link
         to="/activity"
         aria-label="View activity"
-        className="absolute right-8 -bottom-5 flex size-12 items-center justify-center rounded-full bg-card text-card-foreground shadow-[0_4px_24px_rgba(0,0,0,0.08)]"
+        className="pressable absolute right-8 -bottom-5 flex size-12 items-center justify-center rounded-full bg-card text-card-foreground shadow-[0_4px_24px_rgba(0,0,0,0.08)]"
       >
         <ArrowUpRight className="size-5" aria-hidden="true" />
       </Link>
     </section>
   );
-}
-
-/**
- * Animated money amount. The formatter is memoized on the currency so the
- * ticker's effect only restarts when the VALUE changes — an inline closure
- * was a new function every render and replayed the count-up on any re-render.
- */
-function MoneyTicker({ cents, currency }: { cents: number; currency: string }) {
-  const format = useCallback((v: number) => formatMoney(Math.round(v), currency), [currency]);
-  return <NumberTicker value={cents} format={format} />;
 }
 
 /** This month's spending (my share), linking to the full Insights screen. */
@@ -196,7 +199,7 @@ function InsightsCard({ sync }: { sync: SyncData }) {
       <span className="eyebrow">Insights</span>
       <Link
         to="/insights"
-        className="flex min-h-20 items-center gap-4 rounded-[28px] bg-card p-4 transition-colors hover:bg-secondary"
+        className="pressable flex min-h-20 items-center gap-4 rounded-[28px] bg-card p-4 hover:bg-secondary"
       >
         <span className="flex size-12 shrink-0 items-center justify-center rounded-full bg-background">
           <ChartPie className="size-5 text-foreground/70" aria-hidden="true" />
@@ -225,12 +228,7 @@ function GroupList({ sync, groups }: { sync: SyncData; groups: Group[] }) {
   return (
     <div className="flex flex-col gap-3">
       {groups.map((g, i) => (
-        <Link
-          key={g.id}
-          to={`/groups/${g.id}`}
-          className="flex min-h-20 items-center gap-4 rounded-[28px] bg-card p-4 transition-colors animate-in fade-in slide-in-from-bottom-2 fill-mode-backwards duration-300 hover:bg-secondary motion-reduce:animate-none"
-          style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
-        >
+        <GroupCard key={g.id} index={i} to={`/groups/${g.id}`}>
           <span
             className="flex size-12 shrink-0 items-center justify-center rounded-full bg-background text-2xl"
             aria-hidden="true"
@@ -244,9 +242,25 @@ function GroupList({ sync, groups }: { sync: SyncData; groups: Group[] }) {
             </span>
           </span>
           <MyGroupBalance balances={myOpenGroupBalances(sync, g.id)} />
-        </Link>
+        </GroupCard>
       ))}
     </div>
+  );
+}
+
+function GroupCard({ index, to, children }: { index: number; to: string; children: ReactNode }) {
+  const enter = useEnterItem(index);
+  return (
+    <Link
+      to={to}
+      className={cn(
+        'pressable flex min-h-20 items-center gap-4 rounded-[28px] bg-card p-4 hover:bg-secondary',
+        enter.className,
+      )}
+      style={enter.style}
+    >
+      {children}
+    </Link>
   );
 }
 

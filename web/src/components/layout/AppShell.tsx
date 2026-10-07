@@ -58,6 +58,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
   );
   useDraftsReadyToast(online, drafts?.drafts.length ?? null, draftsUi);
   const incomingRequests = sync?.friendRequests?.incoming.length ?? 0;
+  // Grid column of the active bottom tab (the FAB owns column 2), or null.
+  const activeIndex = TABS.findIndex(({ to }) => isTabActive(to, pathname));
+  const activeColumn = activeIndex === -1 ? null : activeIndex >= 2 ? activeIndex + 1 : activeIndex;
 
   // The global "+" adds to whatever the current page is about: the group on a
   // group page, a 1:1 expense with that friend on a friend page.
@@ -79,7 +82,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
     <DraftsUiContext.Provider value={draftsUi}>
       <div className="min-h-svh bg-background">
         {/* Desktop: floating white pill nav */}
-        <header className="pointer-events-none fixed inset-x-0 top-6 z-40 hidden justify-center px-4 md:flex">
+        <header
+          data-vt="header-desktop"
+          className="pointer-events-none fixed inset-x-0 top-6 z-40 hidden justify-center px-4 md:flex"
+        >
           <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-card py-2 pr-2 pl-6 shadow-[0_4px_24px_rgba(0,0,0,0.04)]">
             <Link
               to="/"
@@ -118,13 +124,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </header>
 
         {/* Desktop: search + theme toggle float beside the pill nav */}
-        <div className="fixed top-7 right-6 z-40 hidden items-center gap-2 md:flex">
+        <div
+          data-vt="actions-desktop"
+          className="fixed top-7 right-6 z-40 hidden items-center gap-2 md:flex"
+        >
           <SearchButton active={pathname === '/search'} />
           <ThemeToggle />
         </div>
 
         {/* Mobile: slim in-flow header — wordmark left, search + theme toggle right */}
-        <header className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 pt-[max(1rem,env(safe-area-inset-top))] md:hidden">
+        <header
+          data-vt="header"
+          className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 pt-[max(1rem,env(safe-area-inset-top))] md:hidden"
+        >
           <Link
             to="/"
             className="flex items-center gap-1 text-lg font-semibold tracking-tight text-foreground"
@@ -145,9 +157,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
         {/* Mobile: bottom tab bar + raised FAB */}
         <nav
           aria-label="Primary"
+          data-vt="nav"
           className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] shadow-[0_-4px_24px_rgba(0,0,0,0.04)] md:hidden"
         >
           <div className="relative mx-auto grid max-w-md grid-cols-5">
+            <NavIndicator column={activeColumn} />
             {TABS.map(({ to, label, icon: Icon }, i) => {
               const active = isTabActive(to, pathname);
               return (
@@ -157,7 +171,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   aria-current={active ? 'page' : undefined}
                   aria-label={tabLabel(to, label)}
                   className={cn(
-                    'relative flex min-h-14 flex-col items-center justify-center gap-1 py-2 transition-colors',
+                    'relative flex min-h-14 flex-col items-center justify-center gap-1 py-2 transition-colors duration-(--dur-base)',
                     // leave the center column free for the FAB
                     i === 2 && 'col-start-4',
                     active ? 'text-foreground' : 'text-muted-foreground',
@@ -175,7 +189,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
               type="button"
               aria-label="Add expense"
               onClick={() => setExpenseOpen(true)}
-              className="absolute top-0 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_4px_24px_rgba(0,0,0,0.08)] outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:translate-y-[calc(-50%+1px)]"
+              className="pressable absolute top-0 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-[0_4px_24px_rgba(0,0,0,0.08)] outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               <Plus className="size-6" aria-hidden="true" />
             </button>
@@ -233,12 +247,32 @@ function SearchButton({ active }: { active: boolean }) {
       aria-label="Search all expenses"
       aria-current={active ? 'page' : undefined}
       className={cn(
-        'flex size-11 items-center justify-center rounded-full bg-card text-foreground shadow-[0_4px_24px_rgba(0,0,0,0.04)] outline-none transition-colors hover:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50',
+        'flex size-11 items-center justify-center rounded-full bg-card text-foreground shadow-[0_4px_24px_rgba(0,0,0,0.04)] outline-none pressable hover:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50',
         active && 'bg-primary text-primary-foreground hover:text-primary-foreground/80',
       )}
     >
       <Search className="size-5" aria-hidden="true" />
     </Link>
+  );
+}
+
+/**
+ * The active-tab pill behind the bottom-nav icon. One element for all tabs:
+ * it slides between columns with a transform (column math, no measuring) and
+ * fades out on pages outside the tabs.
+ */
+function NavIndicator({ column }: { column: number | null }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'pointer-events-none absolute top-1 left-0 flex w-1/5 justify-center transition-[translate,opacity] duration-(--dur-slow) ease-out-expo',
+        column === null && 'opacity-0',
+      )}
+      style={{ translate: `${(column ?? 0) * 100}% 0` }}
+    >
+      <span className="h-8 w-14 rounded-full bg-muted" />
+    </span>
   );
 }
 
@@ -248,7 +282,9 @@ function RequestBadge({ count }: { count: number }) {
   return (
     <span
       aria-hidden="true"
-      className="absolute -top-1.5 -right-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-signal px-1 text-[10px] leading-none font-semibold text-white tabular-nums"
+      // Keyed by count: a new request re-pops the badge.
+      key={count}
+      className="motion-badge absolute -top-1.5 -right-2.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-signal px-1 text-[10px] leading-none font-semibold text-white tabular-nums"
     >
       {count > 9 ? '9+' : count}
     </span>

@@ -15,6 +15,7 @@ export function MyGroupBalance({ balances }: { balances: NetBalance[] }) {
             </span>
             <MoneyText
               signed
+              animate
               cents={b.netCents}
               currency={b.currency}
               className="text-sm font-medium"

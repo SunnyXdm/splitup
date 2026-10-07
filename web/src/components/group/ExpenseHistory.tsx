@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { useLocation } from 'react-router';
 import { HandCoins } from 'lucide-react';
 import { toast } from 'sonner';
 import { CategoryIcon } from '@/components/common/CategoryIcon';
@@ -20,7 +21,12 @@ import { errorMessage } from '@/lib/api';
 import { formatMoney } from '@/lib/money';
 import { useDeleteExpense } from '@/lib/queries';
 import { batchScopeHint, historyEntries, paymentRowAction } from '@/lib/settlement-batches';
+import type { HistoryEntry } from '@/lib/settlement-batches';
 import type { Expense, SettlementBatch, SyncData } from '@/lib/types';
+import { EntranceScope } from '@/components/common/Entrance';
+import { prefersReducedMotion, useEnterItem } from '@/lib/motion';
+import { stableRowId, wasJustDeleted } from '@/lib/row-motion';
+import { cn } from '@/lib/utils';
 
 interface ExpenseHistoryProps {
   sync: SyncData;
@@ -74,11 +80,14 @@ export default function ExpenseHistory({
     });
   };
 
+  const { pathname } = useLocation();
+
   // Sorted newest first; settle-up rows fold into one entry when collapsing.
-  const entries = historyEntries(expenses, sync.settlementBatches, {
-    collapse: collapseBatches,
-  });
-  const months: { label: string; items: typeof entries }[] = [];
+  // Rows I just deleted linger briefly (exiting) so they can collapse out.
+  const entries = useExitingEntries(
+    historyEntries(expenses, sync.settlementBatches, { collapse: collapseBatches }),
+  );
+  const months: { key: string; label: string; items: typeof entries }[] = [];
   for (const entry of entries) {
     const label = formatDateSafe(
       entry.kind === 'batch' ? entry.batch.date : entry.expense.date,
@@ -86,67 +95,81 @@ export default function ExpenseHistory({
     );
     const last = months[months.length - 1];
     if (last && last.label === label) last.items.push(entry);
-    else months.push({ label, items: [entry] });
+    // Keyed by month (not position), so a new month on top doesn't remount
+    // — and replay the entrance of — every section below it.
+    else {
+      const seen = months.filter((m) => m.label === label).length;
+      months.push({ key: `${label}-${seen}`, label, items: [entry] });
+    }
   }
+
+  const renderRow = (entry: HistoryEntry): ReactNode => {
+    if (entry.kind === 'batch') {
+      return (
+        <BatchRow
+          batch={entry.batch}
+          rows={entry.rows}
+          nameOf={nameOf}
+          tag={entry.rows.length === 1 ? tagOf(entry.rows[0].groupId) : undefined}
+          onOpen={() => openReceipt(entry.batch)}
+        />
+      );
+    }
+    const e = entry.expense;
+    if (e.isPayment) {
+      const action = paymentRowAction(e, batchesById);
+      return (
+        <PaymentRow
+          expense={e}
+          nameOf={nameOf}
+          tag={tagOf(e.groupId)}
+          action={action}
+          onTap={() => {
+            const batch =
+              e.settlementBatchId != null ? batchesById.get(e.settlementBatchId) : undefined;
+            if (action === 'receipt' && batch) openReceipt(batch);
+            else if (action === 'delete') setPaymentToDelete(e);
+          }}
+        />
+      );
+    }
+    return (
+      <ExpenseRow
+        expense={e}
+        meId={meId}
+        nameOf={nameOf}
+        tag={tagOf(e.groupId)}
+        onSelect={onSelect}
+      />
+    );
+  };
 
   return (
     <div className="flex flex-col gap-6">
-      {months.map(({ label, items }, sectionIndex) => (
-        <section
-          key={`${label}-${sectionIndex}`}
-          className="flex animate-in flex-col gap-2 duration-300 fill-mode-backwards fade-in slide-in-from-bottom-2 motion-reduce:animate-none"
-          style={{ animationDelay: `${Math.min(sectionIndex, 6) * 60}ms` }}
-        >
-          <h2 className="px-1 text-sm font-medium text-muted-foreground">{label}</h2>
-          <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
-            {items.map((entry) => {
-              if (entry.kind === 'batch') {
+      <EntranceScope id={`history:${pathname}`}>
+        {months.map(({ key, label, items }, sectionIndex) => (
+          <MonthSection key={key} index={sectionIndex}>
+            <h2 className="px-1 text-sm font-medium text-muted-foreground">{label}</h2>
+            <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
+              {items.map((entry) => {
+                const row = renderRow(entry);
+                if (entry.exiting) {
+                  return (
+                    <div key={entry.motionKey} className="motion-row-exit" aria-hidden="true">
+                      <div>{row}</div>
+                    </div>
+                  );
+                }
                 return (
-                  <BatchRow
-                    key={entry.key}
-                    batch={entry.batch}
-                    rows={entry.rows}
-                    nameOf={nameOf}
-                    tag={entry.rows.length === 1 ? tagOf(entry.rows[0].groupId) : undefined}
-                    onOpen={() => openReceipt(entry.batch)}
-                  />
+                  <RowMotion key={entry.motionKey} entry={entry}>
+                    {row}
+                  </RowMotion>
                 );
-              }
-              const e = entry.expense;
-              if (e.isPayment) {
-                const action = paymentRowAction(e, batchesById);
-                return (
-                  <PaymentRow
-                    key={entry.key}
-                    expense={e}
-                    nameOf={nameOf}
-                    tag={tagOf(e.groupId)}
-                    action={action}
-                    onTap={() => {
-                      const batch =
-                        e.settlementBatchId != null
-                          ? batchesById.get(e.settlementBatchId)
-                          : undefined;
-                      if (action === 'receipt' && batch) openReceipt(batch);
-                      else if (action === 'delete') setPaymentToDelete(e);
-                    }}
-                  />
-                );
-              }
-              return (
-                <ExpenseRow
-                  key={entry.key}
-                  expense={e}
-                  meId={meId}
-                  nameOf={nameOf}
-                  tag={tagOf(e.groupId)}
-                  onSelect={onSelect}
-                />
-              );
-            })}
-          </div>
-        </section>
-      ))}
+              })}
+            </div>
+          </MonthSection>
+        ))}
+      </EntranceScope>
 
       <SettlementReceipt open={receiptOpen} onOpenChange={setReceiptOpen} batch={receipt} />
 
@@ -183,6 +206,93 @@ export default function ExpenseHistory({
       </AlertDialog>
     </div>
   );
+}
+
+/** One month of history; months stagger in on the screen's first visit. */
+function MonthSection({ index, children }: { index: number; children: ReactNode }) {
+  const enter = useEnterItem(index);
+  return (
+    <section className={cn('flex flex-col gap-2', enter.className)} style={enter.style}>
+      {children}
+    </section>
+  );
+}
+
+type MotionEntry = HistoryEntry & { motionKey: string; exiting?: boolean };
+
+/** Rows keep one key from optimistic add through server confirmation. */
+function motionKeyOf(entry: HistoryEntry): string {
+  return entry.kind === 'expense' ? `e${stableRowId(entry.expense.id)}` : entry.key;
+}
+
+const EXIT_MS = 380;
+
+/**
+ * The entries plus, for a moment, any row I just deleted (flagged `exiting`,
+ * kept where it was) so it can collapse out instead of vanishing. Only
+ * deletions recorded by useDeleteExpense qualify — filtering, refetches and
+ * other people's changes never animate rows out.
+ */
+function useExitingEntries(entries: HistoryEntry[]): MotionEntry[] {
+  const current: MotionEntry[] = entries.map((e) => ({ ...e, motionKey: motionKeyOf(e) }));
+  const sig = current.map((e) => e.motionKey).join(',');
+  const [snap, setSnap] = useState({ sig, entries: current });
+  const [ghosts, setGhosts] = useState<{ entry: MotionEntry; before: string | null }[]>([]);
+
+  if (snap.sig !== sig) {
+    // Adjusting state during render (React's "previous props" pattern).
+    const keys = new Set(current.map((e) => e.motionKey));
+    const gone = snap.entries
+      .map((e, i) => ({ e, i }))
+      .filter(
+        ({ e }) =>
+          !keys.has(e.motionKey) &&
+          !e.exiting &&
+          e.kind === 'expense' &&
+          wasJustDeleted(e.expense.id),
+      );
+    if (gone.length > 0 && !prefersReducedMotion()) {
+      const added = gone.map(({ e, i }) => ({
+        entry: { ...e, exiting: true },
+        before: snap.entries.slice(i + 1).find((n) => keys.has(n.motionKey))?.motionKey ?? null,
+      }));
+      setGhosts((g) => [...g, ...added]);
+    }
+    setSnap({ sig, entries: current });
+  }
+
+  useEffect(() => {
+    if (ghosts.length === 0) return;
+    const done = new Set(ghosts.map((g) => g.entry.motionKey));
+    const timer = setTimeout(
+      () => setGhosts((g) => g.filter((x) => !done.has(x.entry.motionKey))),
+      EXIT_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [ghosts]);
+
+  if (ghosts.length === 0) return current;
+  const merged = [...current];
+  const present = new Set(current.map((e) => e.motionKey));
+  for (const { entry, before } of ghosts) {
+    if (present.has(entry.motionKey)) continue; // restored (delete failed)
+    const at = before === null ? -1 : merged.findIndex((e) => e.motionKey === before);
+    if (at === -1) merged.push(entry);
+    else merged.splice(at, 0, entry);
+  }
+  return merged;
+}
+
+/**
+ * Row wrapper: an optimistic row (temp negative id) that mounts slides in
+ * with a brief highlight — once; it keeps its key when the server row
+ * replaces it, so confirmation doesn't replay anything.
+ */
+function RowMotion({ entry, children }: { entry: HistoryEntry; children: ReactNode }) {
+  const [fresh] = useState(
+    () => (entry.kind === 'expense' ? entry.expense.id : entry.batch.id) < 0,
+  );
+  return <div className={fresh ? 'motion-row-new' : undefined}>{children}</div>;
 }
 
 function Tag({ tag }: { tag: string }) {

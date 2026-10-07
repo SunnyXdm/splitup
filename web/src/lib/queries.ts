@@ -49,6 +49,7 @@ import type {
   SyncData,
   User,
 } from './types';
+import { noteDeleted, noteResolvedTemp } from './row-motion';
 
 export const SYNC_KEY = ['sync'] as const;
 
@@ -445,6 +446,7 @@ export function useCreateExpense() {
       return { tempId };
     },
     onSuccess: (expense, _body, ctx) => {
+      noteResolvedTemp(ctx.tempId, expense.id);
       patchSync(qc, (sync) => withResolvedTemp(sync, ctx.tempId, expense));
     },
     onError: (_err, _body, ctx) => {
@@ -640,6 +642,7 @@ export function useDeleteExpense() {
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: SYNC_KEY });
       const prev = qc.getQueryData<SyncData>(SYNC_KEY)?.expenses.find((e) => e.id === id);
+      noteDeleted(id);
       patchSync(qc, (sync) => withoutExpense(sync, id));
       return { prev };
     },
