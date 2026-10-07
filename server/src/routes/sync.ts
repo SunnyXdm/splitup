@@ -19,6 +19,7 @@ import {
   type SyncData,
   type User,
 } from '../lib/wire';
+import { receiptScanEnabled } from '../receipts';
 
 /**
  * Non-deleted expenses visible to me: my live groups' + non-group ones I'm
@@ -167,6 +168,7 @@ app.get('/', (c) => {
     expenses: expenseRows.map((e) => toExpense(e, sharesByExpense.get(e.id) ?? [])),
     activity: activityRows.map(toActivity),
     friendRequests: { incoming, outgoing },
+    features: { receiptScan: receiptScanEnabled() },
     syncedAt: nowIso(),
   };
   return c.json(payload);
