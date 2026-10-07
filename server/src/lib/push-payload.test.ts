@@ -7,6 +7,7 @@ import {
   formatAmount,
   friendAcceptedPayload,
   friendRequestPayload,
+  recurringDuePayload,
   settlementPayload,
 } from './push-payload';
 import { pushSubscriptionBody, pushUnsubscribeBody } from '../validate';
@@ -142,6 +143,19 @@ describe('friend and group payloads', () => {
   });
   it('clip collapses whitespace', () => {
     assert.equal(clip('  a \n b  '), 'a b');
+  });
+});
+
+describe('recurringDuePayload', () => {
+  it('names one bill, two bills, or the first and a count', () => {
+    assert.equal(recurringDuePayload(['Rent']).body, '“Rent” is due to add');
+    assert.equal(recurringDuePayload(['Rent', 'Rent']).body, '“Rent” is due to add');
+    assert.equal(recurringDuePayload(['Rent', 'Wifi']).body, '“Rent” and “Wifi” are due to add');
+    assert.equal(
+      recurringDuePayload(['Rent', 'Wifi', 'Gym']).body,
+      '“Rent” and 2 other bills are due to add',
+    );
+    assert.equal(recurringDuePayload(['Rent']).url, '/');
   });
 });
 

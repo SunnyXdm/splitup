@@ -231,3 +231,15 @@ export function addedToGroupPayload(
     tag: `group-${group.id}`,
   };
 }
+
+/** New recurring-bill occurrences reached their due date: "“Rent” is due to add". */
+export function recurringDuePayload(descriptions: string[]): PushPayload {
+  const unique = [...new Set(descriptions)];
+  const body =
+    unique.length <= 1
+      ? `${quote(unique[0] ?? 'A bill')} is due to add`
+      : unique.length === 2
+        ? `${quote(unique[0])} and ${quote(unique[1])} are due to add`
+        : `${quote(unique[0])} and ${unique.length - 1} other bills are due to add`;
+  return { title: 'Bills due', body, url: '/', tag: 'recurring-due' };
+}

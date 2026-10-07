@@ -9,6 +9,7 @@ import { logger } from 'hono/logger';
 import { ZodError } from 'zod';
 import { pruneExpired, type AppEnv } from './auth';
 import { backupDaily, checkpoint, db } from './db';
+import { runRecurringGeneration } from './lib/recurring';
 import { csrfProtect, rateLimit, CSP } from './security';
 import authRoutes from './routes/auth';
 import meRoutes from './routes/me';
@@ -20,6 +21,7 @@ import expenseRoutes from './routes/expenses';
 import settlementRoutes from './routes/settlements';
 import pushRoutes from './routes/push';
 import receiptRoutes from './routes/receipts';
+import recurringRoutes from './routes/recurring';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT ?? 8790);
@@ -57,6 +59,7 @@ app.route('/api/expenses', expenseRoutes);
 app.route('/api/settlements', settlementRoutes);
 app.route('/api/push', pushRoutes);
 app.route('/api/receipts', receiptRoutes);
+app.route('/api/recurring', recurringRoutes);
 app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
 
 if (IS_PROD) {
@@ -97,9 +100,20 @@ const runBackup = () => {
     });
   return backupInFlight;
 };
+// Recurring bills: catch up at boot (the homelab may have been down for days)
+// and hourly after that. Never fatal — a bad rule is logged and skipped.
+const runRecurring = () => {
+  try {
+    runRecurringGeneration();
+  } catch (err) {
+    console.error('recurring generation failed', err);
+  }
+};
 checkpoint();
 void runBackup();
+runRecurring();
 setInterval(checkpoint, HOUR).unref();
+setInterval(runRecurring, HOUR).unref();
 setInterval(runBackup, 24 * HOUR).unref();
 
 const server = serve({ fetch: app.fetch, port: PORT }, (info) => {

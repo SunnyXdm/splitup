@@ -118,6 +118,53 @@ export interface FriendRequests {
   outgoing: OutgoingFriendRequest[];
 }
 
+export type Cadence = 'weekly' | 'monthly' | 'yearly';
+
+export interface RecurringSplit {
+  mode: 'equal' | 'exact' | 'percent' | 'shares';
+  participants: number[];
+  values?: { userId: number; value: number }[];
+  payers: { userId: number; cents: number }[];
+}
+
+export interface RecurringTemplate {
+  description: string;
+  amountCents: number;
+  currency: string;
+  category: Category;
+  notes: string | null;
+  split: RecurringSplit;
+}
+
+export interface RecurringRule {
+  id: number;
+  createdBy: number;
+  groupId: number | null;
+  friendId: number | null;
+  template: RecurringTemplate;
+  cadence: Cadence;
+  interval: number;
+  /** YYYY-MM-DD */
+  anchorDate: string;
+  /** YYYY-MM-DD of the next occurrence not yet generated. */
+  nextDue: string;
+  paused: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A due occurrence waiting in its creator's "Due to add" inbox. */
+export interface PendingOccurrence {
+  id: number;
+  ruleId: number;
+  dueDate: string;
+  description: string;
+  amountCents: number;
+  currency: string;
+  groupId: number | null;
+  friendId: number | null;
+}
+
 export interface SyncData {
   me: Me;
   users: User[];
@@ -129,6 +176,8 @@ export interface SyncData {
   friendRequests: FriendRequests;
   /** Server capabilities the client may surface. */
   features: { receiptScan: boolean };
+  /** Rules I created or that live in my groups; inbox items only for my own. */
+  recurring: { rules: RecurringRule[]; pending: PendingOccurrence[] };
   syncedAt: string;
 }
 

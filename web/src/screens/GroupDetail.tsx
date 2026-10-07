@@ -10,6 +10,7 @@ import {
   MoveRight,
   PencilLine,
   ReceiptText,
+  Repeat,
   Trash2,
   UserRoundPlus,
   UsersRound,
@@ -270,6 +271,9 @@ export default function GroupDetail() {
                 }}
               >
                 <Download aria-hidden="true" /> Export expenses
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => navigate(`/recurring?group=${group.id}`)}>
+                <Repeat aria-hidden="true" /> Recurring bills
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setLeaveOpen(true)}>

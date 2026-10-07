@@ -1,6 +1,7 @@
 import { useState } from 'react';
+import { Link } from 'react-router';
 import { formatDistanceToNow } from 'date-fns';
-import { LogOut, Monitor, Moon, MoonStar, Sun } from 'lucide-react';
+import { ChevronRight, LogOut, Monitor, Moon, MoonStar, Repeat, Sun } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuthActions } from '@/components/auth/auth-context';
 import { useOnline } from '@/components/layout/OfflineBanner';
@@ -71,6 +72,7 @@ export default function Account() {
     }
   };
 
+  const recurringCount = sync.data?.recurring?.rules.length ?? 0;
   const lastSynced = sync.dataUpdatedAt
     ? formatDistanceToNow(sync.dataUpdatedAt, { addSuffix: true })
     : 'never';
@@ -134,6 +136,26 @@ export default function Account() {
           </FieldGroup>
         </CardContent>
       </Card>
+
+      <Link
+        to="/recurring"
+        className="flex min-h-16 items-center gap-4 rounded-[28px] bg-card p-4 transition-colors hover:bg-secondary"
+      >
+        <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-background">
+          <Repeat className="size-5 text-foreground/70" aria-hidden="true" />
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="font-medium">Recurring bills</span>
+          <span className="text-sm text-muted-foreground">
+            {recurringCount === 0
+              ? 'Rent, utilities, subscriptions'
+              : recurringCount === 1
+                ? '1 bill'
+                : `${recurringCount} bills`}
+          </span>
+        </span>
+        <ChevronRight className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </Link>
 
       <Card>
         <CardHeader>

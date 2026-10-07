@@ -12,6 +12,7 @@ import Friends from './screens/Friends';
 import GroupDetail from './screens/GroupDetail';
 import Home from './screens/Home';
 import Insights from './screens/Insights';
+import Recurring from './screens/Recurring';
 import Search from './screens/Search';
 import FriendInvite from './screens/FriendInvite';
 import Join from './screens/Join';
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="/activity" element={<Activity />} />
           <Route path="/search" element={<Search />} />
           <Route path="/insights" element={<Insights />} />
+          <Route path="/recurring" element={<Recurring />} />
           <Route path="/account" element={<Account />} />
           <Route path="/join/:token" element={<Join />} />
           <Route path="/friend/:token" element={<FriendInvite />} />

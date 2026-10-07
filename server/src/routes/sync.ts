@@ -21,6 +21,13 @@ import {
   type SyncData,
   type User,
 } from '../lib/wire';
+import {
+  generateForUser,
+  pendingFor,
+  todayFromQuery,
+  toRecurringRule,
+  visibleRules,
+} from '../lib/recurring';
 import { receiptScanEnabled } from '../receipts';
 
 /**
@@ -46,6 +53,11 @@ app.use(requireAuth);
 
 app.get('/', (c) => {
   const me = c.get('user');
+
+  // Lazy catch-up of my recurring bills, so the inbox is current even between
+  // hourly runs (and right after the server was down).
+  generateForUser(me.id, todayFromQuery(c.req.query('today')));
+  const recurringRows = visibleRules(me.id);
 
   const friendIds = db
     .prepare<[number], { friend_id: number }>(
@@ -191,6 +203,10 @@ app.get('/', (c) => {
     activity: activityRows.map(toActivity),
     friendRequests: { incoming, outgoing },
     features: { receiptScan: receiptScanEnabled() },
+    recurring: {
+      rules: recurringRows.map(toRecurringRule),
+      pending: pendingFor(me.id, recurringRows),
+    },
     syncedAt: nowIso(),
   };
   return c.json(payload);

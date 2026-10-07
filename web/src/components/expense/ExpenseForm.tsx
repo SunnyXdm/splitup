@@ -42,17 +42,36 @@ import {
   type ExpenseFormValues,
 } from '@/lib/expense-form';
 import { downscaleImage, receiptPrefill } from '@/lib/receipt';
+import {
+  CADENCE_OPTIONS,
+  cadenceLabel,
+  formValuesFromRule,
+  repeatPlan,
+  shortDate,
+  templateFromForm,
+} from '@/lib/recurring';
 import { buildRepeatPrefill } from '@/lib/repeat';
 import { formatMoney, isCanonicalAmount } from '@/lib/money';
 import {
   SYNC_KEY,
+  useAddOccurrence,
   useCreateExpense,
+  useCreateRecurring,
   useDeleteExpense,
   useSyncData,
   useUpdateExpense,
+  useUpdateRecurring,
 } from '@/lib/queries';
-import type { Category, Expense, SyncData, User } from '@/lib/types';
-import { centsToInput, currencySymbol } from './money-input';
+import type {
+  Cadence,
+  Category,
+  Expense,
+  PendingOccurrence,
+  RecurringRule,
+  SyncData,
+  User,
+} from '@/lib/types';
+import { centsToInput, currencySymbol, todayISO } from './money-input';
 import { PayerPicker, defaultPayerState } from './PayerPicker';
 import { SplitEditor, defaultSplitState } from './SplitEditor';
 
@@ -67,6 +86,10 @@ export interface ExpenseFormProps {
   friendId?: number;
   /** Present = review a saved draft (its own scope wins over groupId/friendId). */
   draftId?: string;
+  /** Present = review a due recurring bill, then add it (marks it added). */
+  occurrence?: PendingOccurrence;
+  /** Present = edit a recurring bill's template and schedule. */
+  rule?: RecurringRule;
 }
 
 export default function ExpenseForm({
@@ -76,6 +99,8 @@ export default function ExpenseForm({
   expense,
   friendId,
   draftId,
+  occurrence,
+  rule,
 }: ExpenseFormProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -91,6 +116,8 @@ export default function ExpenseForm({
           expense={expense}
           friendId={friendId}
           draftId={draftId}
+          occurrence={occurrence}
+          rule={rule}
         />
       </SheetContent>
     </Sheet>
@@ -108,13 +135,17 @@ type FormMode =
   | { kind: 'new' }
   | { kind: 'edit'; expense: Expense }
   | { kind: 'repeat'; expense: Expense }
-  | { kind: 'draft'; draftId: string };
+  | { kind: 'draft'; draftId: string }
+  | { kind: 'occurrence'; occurrence: PendingOccurrence }
+  | { kind: 'rule'; rule: RecurringRule };
 
 const TITLES: Record<FormMode['kind'], string> = {
   new: 'Add expense',
   edit: 'Edit expense',
   repeat: 'Repeat expense',
   draft: 'Review draft',
+  occurrence: 'Add due bill',
+  rule: 'Edit recurring bill',
 };
 
 function FormBody({
@@ -123,6 +154,8 @@ function FormBody({
   expense,
   friendId,
   draftId,
+  occurrence,
+  rule,
 }: Omit<ExpenseFormProps, 'open'>) {
   const { data: sync } = useSyncData();
   const drafts = useDrafts(sync?.me.id);
@@ -132,9 +165,13 @@ function FormBody({
     ? { kind: 'repeat', expense: repeatOf }
     : draftId !== undefined
       ? { kind: 'draft', draftId }
-      : expense
-        ? { kind: 'edit', expense }
-        : { kind: 'new' };
+      : occurrence
+        ? { kind: 'occurrence', occurrence }
+        : rule
+          ? { kind: 'rule', rule }
+          : expense
+            ? { kind: 'edit', expense }
+            : { kind: 'new' };
   return (
     <>
       <SheetHeader className="flex-row items-center gap-2 pr-14 pb-0">
@@ -256,6 +293,22 @@ function initialForm(
       const rv = revalidateFormValues(draft.values, sync, draft.names);
       return { ...base, values: rv.values, notes: rv.notes, blocking: rv.blocking, draft };
     }
+    case 'occurrence': {
+      const rule = sync.recurring?.rules.find((r) => r.id === mode.occurrence.ruleId);
+      if (!rule) {
+        return {
+          ...base,
+          values: emptyFormValues(sync, { groupId: null }),
+          blocking: 'This recurring bill was deleted.',
+        };
+      }
+      const rv = formValuesFromRule(rule, sync, mode.occurrence.dueDate);
+      return { ...base, values: rv.values, notes: rv.notes, blocking: rv.blocking };
+    }
+    case 'rule': {
+      const rv = formValuesFromRule(mode.rule, sync, mode.rule.nextDue);
+      return { ...base, values: rv.values, notes: rv.notes, blocking: rv.blocking };
+    }
     case 'new': {
       const scope = { groupId, friendId };
       const blank = emptyFormValues(sync, scope);
@@ -293,6 +346,9 @@ function FormFields({
   const createExpense = useCreateExpense();
   const updateExpense = useUpdateExpense();
   const deleteExpense = useDeleteExpense();
+  const createRecurring = useCreateRecurring();
+  const updateRecurring = useUpdateRecurring();
+  const addOccurrence = useAddOccurrence();
 
   const me = sync.me;
   const [init] = useState(() => initialForm(mode, sync, drafts, groupIdProp, friendId));
@@ -304,6 +360,15 @@ function FormFields({
 
   const expense = mode.kind === 'edit' ? mode.expense : undefined;
   const isEdit = expense !== undefined;
+  /** Edits and recurring bills keep their group / friend; only new expenses pick one. */
+  const fixedScope = isEdit || mode.kind === 'occurrence' || mode.kind === 'rule';
+  /** New expenses, repeats and drafts autosave to this device (and save offline as drafts). */
+  const autosaves = mode.kind === 'new' || mode.kind === 'repeat' || mode.kind === 'draft';
+  // "Repeat" for a new expense (or a recurring bill's cadence while editing it).
+  const [repeat, setRepeat] = useState<Cadence | 'none'>(
+    mode.kind === 'rule' ? mode.rule.cadence : 'none',
+  );
+  const offersRepeat = mode.kind === 'new' || mode.kind === 'rule';
   const { groupId, currency } = values;
   const group = groupId !== null ? (sync.groups.find((g) => g.id === groupId) ?? null) : null;
 
@@ -325,12 +390,12 @@ function FormFields({
     }
   });
   useEffect(() => {
-    if (mode.kind === 'edit') return;
+    if (!autosaves) return;
     if (!dirty.current && sameFormValues(values, init.values)) return;
     dirty.current = true;
     const t = setTimeout(() => persist(), 400);
     return () => clearTimeout(t);
-  }, [values, init.values, mode.kind]);
+  }, [values, init.values, autosaves]);
   useEffect(() => () => persist(), []);
 
   /** Saved for good: stop autosaving and clear this form's slot. */
@@ -442,10 +507,17 @@ function FormFields({
   const dateError = check.errors.date;
   const friendError = check.errors.friend;
 
-  const saving = createExpense.isPending || updateExpense.isPending;
+  const saving =
+    createExpense.isPending ||
+    updateExpense.isPending ||
+    createRecurring.isPending ||
+    updateRecurring.isPending ||
+    addOccurrence.isPending;
   const draft = init.draft;
   /** Offline, a new expense (or a draft under review) is kept as a draft. */
-  const savesAsDraft = !online && mode.kind !== 'edit';
+  const savesAsDraft = !online && autosaves;
+  const today = todayISO();
+  const plan = repeat !== 'none' && values.date ? repeatPlan(values.date, repeat, today) : null;
 
   const handleSave = () => {
     setAttempted(true);
@@ -487,6 +559,81 @@ function FormFields({
         }
       },
     };
+    const failed = (err: Error) => {
+      finished.current = false;
+      toast.error(errorMessage(err));
+    };
+    if (mode.kind === 'occurrence') {
+      addOccurrence.mutate(
+        {
+          occurrenceId: mode.occurrence.id,
+          expense: {
+            groupId: input.groupId,
+            description: input.description,
+            amountCents: input.amountCents,
+            currency: input.currency,
+            date: input.date,
+            category: input.category,
+            notes: input.notes,
+            shares: input.shares,
+          },
+        },
+        {
+          onSuccess: () => {
+            toast('Expense added');
+            onOpenChange(false);
+          },
+          onError: failed,
+        },
+      );
+      return;
+    }
+    if (mode.kind === 'rule') {
+      updateRecurring.mutate(
+        {
+          id: mode.rule.id,
+          template: templateFromForm(values, input, participantIds),
+          cadence: repeat === 'none' ? mode.rule.cadence : repeat,
+          // A moved "next due" date re-anchors the schedule on it.
+          ...(values.date !== init.values.date ? { anchorDate: values.date } : {}),
+        },
+        {
+          onSuccess: () => {
+            toast('Recurring bill updated');
+            onOpenChange(false);
+          },
+          onError: failed,
+        },
+      );
+      return;
+    }
+    if (mode.kind === 'new' && repeat !== 'none' && plan) {
+      const cadence = repeat;
+      const body = {
+        groupId: input.groupId,
+        friendId: input.groupId === null ? values.friendId : null,
+        template: templateFromForm(values, input, participantIds),
+        cadence,
+        anchorDate: input.date,
+        addFirst: plan.addFirst,
+      };
+      finish();
+      createRecurring.mutate(
+        { ...body, clientKey: keyFor(body) },
+        {
+          onSuccess: () => {
+            toast(
+              plan.addFirst
+                ? `Expense added · repeats ${cadenceLabel(cadence).toLowerCase()}`
+                : `Recurring bill set up — first due ${shortDate(plan.firstDue, today)}`,
+            );
+            onOpenChange(false);
+          },
+          onError: failed,
+        },
+      );
+      return;
+    }
     if (expense) {
       updateExpense.mutate(
         // `expense` is the snapshot this edit started from — its updatedAt is
@@ -549,16 +696,23 @@ function FormFields({
     <>
       <div className="min-h-0 flex-1 overflow-y-auto px-4">
         <FieldGroup className="pb-2">
-          {restored || notices.length > 0 || mode.kind === 'repeat' ? (
+          {restored ||
+          notices.length > 0 ||
+          mode.kind === 'repeat' ||
+          mode.kind === 'occurrence' ? (
             <FormNotice
               title={
                 restored
                   ? 'Draft restored'
                   : mode.kind === 'repeat'
                     ? 'Repeating with today’s date'
-                    : notices.length > 0
-                      ? 'Some things changed since this draft'
-                      : null
+                    : mode.kind === 'occurrence'
+                      ? `Due ${shortDate(mode.occurrence.dueDate, today)} — check it, then add`
+                      : mode.kind === 'rule'
+                        ? 'Some people changed since this bill was set up'
+                        : notices.length > 0
+                          ? 'Some things changed since this draft'
+                          : null
               }
               notes={notices}
               onDiscard={restored ? discardRestored : undefined}
@@ -660,7 +814,7 @@ function FormFields({
             ) : null}
           </Field>
 
-          {groupId === null && !isEdit ? (
+          {groupId === null && !fixedScope ? (
             <Field data-invalid={attempted && friendError !== null}>
               <FieldLabel htmlFor="expense-friend">With</FieldLabel>
               {friendOptions.length === 0 ? (
@@ -685,7 +839,9 @@ function FormFields({
           ) : null}
 
           <Field data-invalid={attempted && dateError !== null}>
-            <FieldLabel htmlFor="expense-date">Date</FieldLabel>
+            <FieldLabel htmlFor="expense-date">
+              {mode.kind === 'rule' ? 'Next due' : 'Date'}
+            </FieldLabel>
             <Input
               id="expense-date"
               type="date"
@@ -697,6 +853,17 @@ function FormFields({
               <FieldDescription className="text-destructive">{dateError}</FieldDescription>
             ) : null}
           </Field>
+
+          {offersRepeat ? (
+            <RepeatField
+              value={repeat}
+              onChange={setRepeat}
+              editingRule={mode.kind === 'rule'}
+              offline={!online}
+              plan={plan}
+              today={today}
+            />
+          ) : null}
 
           <Field>
             <FieldLabel>Category</FieldLabel>
@@ -771,22 +938,22 @@ function FormFields({
         {!online ? (
           <FieldDescription className="flex items-center justify-center gap-1.5 text-center">
             <CloudOff className="size-3.5 shrink-0" aria-hidden="true" />
-            {isEdit
+            {fixedScope
               ? 'You’re offline — viewing only.'
               : 'You’re offline — save a draft and add it when you’re back online.'}
           </FieldDescription>
         ) : null}
         <Button
           className="h-12 w-full rounded-full"
-          disabled={(isEdit && !online) || saving}
+          disabled={(fixedScope && !online) || saving}
           onClick={handleSave}
         >
           {saving ? <Spinner data-icon="inline-start" /> : null}
-          {isEdit
+          {isEdit || mode.kind === 'rule'
             ? 'Save changes'
             : savesAsDraft
               ? 'Save draft'
-              : draft
+              : draft || mode.kind === 'occurrence'
                 ? 'Add expense'
                 : 'Save'}
         </Button>
@@ -837,6 +1004,50 @@ function FormFields({
         ) : null}
       </SheetFooter>
     </>
+  );
+}
+
+/**
+ * "Repeat" for a new expense (or a recurring bill's cadence): says plainly
+ * what saving will do — nothing is ever added later without the user.
+ */
+function RepeatField({
+  value,
+  onChange,
+  editingRule,
+  offline,
+  plan,
+  today,
+}: {
+  value: Cadence | 'none';
+  onChange: (value: Cadence | 'none') => void;
+  editingRule: boolean;
+  offline: boolean;
+  plan: { addFirst: boolean; firstDue: string } | null;
+  today: string;
+}) {
+  const hint = editingRule
+    ? 'Each time it’s due, it waits in “Due to add” on Home for you to add or skip.'
+    : offline
+      ? 'Repeating needs a connection — offline, this saves as a one-off draft.'
+      : plan === null
+        ? null
+        : plan.addFirst
+          ? `Adds this now; next due ${shortDate(plan.firstDue, today)}. You confirm each one.`
+          : `Nothing is added today — first due ${shortDate(plan.firstDue, today)}.`;
+  return (
+    <Field>
+      <FieldLabel htmlFor="expense-repeat">Repeat</FieldLabel>
+      <PickerSelect
+        id="expense-repeat"
+        title="Repeat"
+        value={offline && !editingRule ? 'none' : value}
+        disabled={offline}
+        onValueChange={(v) => onChange(v as Cadence | 'none')}
+        options={CADENCE_OPTIONS.filter((o) => !editingRule || o.value !== 'none')}
+      />
+      {hint ? <FieldDescription>{hint}</FieldDescription> : null}
+    </Field>
   );
 }
 
