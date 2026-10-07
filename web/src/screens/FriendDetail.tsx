@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { BellRing, Plus, ReceiptText, UserRound } from 'lucide-react';
+import { BellRing, CircleHelp, Plus, ReceiptText, UserRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -15,6 +15,7 @@ import { MoneyText } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import SettleUpSheet from '@/components/expense/SettleUpSheet';
+import ExplainBalanceSheet from '@/components/common/ExplainBalanceSheet';
 import { formatMoney } from '@/lib/money';
 import { reminderText, sendReminder } from '@/lib/remind';
 import ExpenseHistory from '@/components/group/ExpenseHistory';
@@ -33,6 +34,8 @@ export default function FriendDetail() {
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | undefined>();
   const [settleOpen, setSettleOpen] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
+  const [explainCurrency, setExplainCurrency] = useState<string | null>(null);
 
   if (!sync) return <FriendDetailSkeleton />;
 
@@ -86,10 +89,29 @@ export default function FriendDetail() {
             <p className="text-lg text-muted-foreground">You&rsquo;re all settled up</p>
           ) : (
             entries.map((b) => (
-              <p key={b.currency} className="text-xl font-medium tracking-tight">
-                {b.netCents > 0 ? `${friend.name} owes you ` : 'You owe '}
-                <MoneyText signed cents={b.netCents} currency={b.currency} />
-              </p>
+              <div key={b.currency} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p className="text-xl font-medium tracking-tight">
+                  {b.netCents > 0 ? `${friend.name} owes you ` : 'You owe '}
+                  <MoneyText signed cents={b.netCents} currency={b.currency} />
+                </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="rounded-full text-muted-foreground"
+                  aria-label={
+                    b.netCents > 0
+                      ? `Why does ${friend.name} owe you ${formatMoney(b.netCents, b.currency)}?`
+                      : `Why do you owe ${friend.name} ${formatMoney(-b.netCents, b.currency)}?`
+                  }
+                  onClick={() => {
+                    setExplainCurrency(b.currency);
+                    setExplainOpen(true);
+                  }}
+                >
+                  <CircleHelp data-icon="inline-start" aria-hidden="true" />
+                  Why?
+                </Button>
+              </div>
             ))
           )}
         </div>
@@ -172,6 +194,15 @@ export default function FriendDetail() {
         groupId={editingExpense ? editingExpense.groupId : null}
         expense={editingExpense}
         friendId={friend.id}
+      />
+      <ExplainBalanceSheet
+        open={explainOpen}
+        onOpenChange={setExplainOpen}
+        target={
+          explainCurrency === null
+            ? null
+            : { kind: 'friend', friendId: friend.id, currency: explainCurrency }
+        }
       />
       <SettleUpSheet
         open={settleOpen}

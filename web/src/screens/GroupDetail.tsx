@@ -3,6 +3,7 @@ import { useParams } from 'react-router';
 import { toast } from 'sonner';
 import {
   BellRing,
+  ChevronRight,
   Download,
   EllipsisVertical,
   LogOut,
@@ -50,6 +51,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { MoneyText } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
+import ExplainBalanceSheet, { type ExplainTarget } from '@/components/common/ExplainBalanceSheet';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import SettleUpSheet, { type SettleDirection } from '@/components/expense/SettleUpSheet';
 import AddMembersSheet from '@/components/group/AddMembersSheet';
@@ -97,6 +99,8 @@ export default function GroupDetail() {
   const [settleOpen, setSettleOpen] = useState(false);
   const [settlePrefill, setSettlePrefill] = useState<SettlePrefill>({});
   const [addPeopleOpen, setAddPeopleOpen] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
+  const [explainTarget, setExplainTarget] = useState<ExplainTarget | null>(null);
 
   if (!sync) return <GroupDetailSkeleton />;
 
@@ -134,6 +138,11 @@ export default function GroupDetail() {
   const expenses = groupExpenses(sync, group.id);
   const balances = groupBalances(sync, group.id);
   const transfers = groupSettlements(sync, group.id);
+
+  const explain = (target: ExplainTarget) => {
+    setExplainTarget(target);
+    setExplainOpen(true);
+  };
 
   const openEdit = () =>
     setEditValues({ name: group.name, emoji: group.emoji, currency: group.currency });
@@ -294,8 +303,8 @@ export default function GroupDetail() {
             <div className="flex flex-col divide-y divide-border/60 rounded-[28px] bg-card px-4">
               {members.map((u) => {
                 const nets = balances.filter((b) => b.userId === u.id && b.netCents !== 0);
-                return (
-                  <div key={u.id} className="flex min-h-16 items-center gap-3 py-3">
+                const rowContent = (
+                  <>
                     <UserAvatar user={u} />
                     <span className="min-w-0 flex-1 truncate font-medium">
                       {u.id === meId ? 'You' : u.name}
@@ -326,7 +335,46 @@ export default function GroupDetail() {
                         ))
                       )}
                     </span>
-                  </div>
+                    {nets.length > 0 ? (
+                      <ChevronRight
+                        className="size-4 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                  </>
+                );
+                if (nets.length === 0) {
+                  return (
+                    <div key={u.id} className="flex min-h-16 items-center gap-3 py-3">
+                      {rowContent}
+                    </div>
+                  );
+                }
+                // Explains this member's own group net (first currency; the
+                // sheet offers a switch when there are more).
+                const first = nets[0];
+                const subject = u.id === meId ? 'do you' : `does ${u.name}`;
+                return (
+                  <button
+                    key={u.id}
+                    type="button"
+                    aria-label={`Why ${subject} ${first.netCents > 0 ? 'get back' : 'owe'} ${formatMoney(
+                      Math.abs(first.netCents),
+                      first.currency,
+                    )}?`}
+                    onClick={() =>
+                      explain({
+                        kind: 'group',
+                        groupId: group.id,
+                        currency: first.currency,
+                        focusId: u.id,
+                        otherId: null,
+                      })
+                    }
+                    className="flex min-h-16 w-full items-center gap-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  >
+                    {rowContent}
+                  </button>
                 );
               })}
             </div>
@@ -345,17 +393,39 @@ export default function GroupDetail() {
                         key={`${t.fromUserId}-${t.toUserId}-${t.currency}-${i}`}
                         className="flex min-h-14 items-center gap-3 py-3"
                       >
-                        <span className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
-                          <span className="truncate font-medium">{nameOf(t.fromUserId)}</span>
-                          <MoveRight
-                            className="size-3.5 shrink-0 text-muted-foreground"
-                            aria-hidden="true"
-                          />
-                          <span className="truncate font-medium">{nameOf(t.toUserId)}</span>
-                        </span>
-                        <span className="shrink-0 text-sm tabular-nums">
-                          {formatMoney(t.cents, t.currency)}
-                        </span>
+                        <button
+                          type="button"
+                          aria-label={`Why ${
+                            t.fromUserId === meId
+                              ? `do you pay ${nameOf(t.toUserId)}`
+                              : `does ${nameOf(t.fromUserId)} pay ${
+                                  t.toUserId === meId ? 'you' : nameOf(t.toUserId)
+                                }`
+                          } ${formatMoney(t.cents, t.currency)}?`}
+                          onClick={() =>
+                            explain({
+                              kind: 'group',
+                              groupId: group.id,
+                              currency: t.currency,
+                              // From my side when I'm in it; else the creditor's.
+                              focusId: involved ? meId : t.toUserId,
+                              otherId: involved ? other : t.fromUserId,
+                            })
+                          }
+                          className="-my-1 flex min-w-0 flex-1 items-center gap-3 rounded-full py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
+                            <span className="truncate font-medium">{nameOf(t.fromUserId)}</span>
+                            <MoveRight
+                              className="size-3.5 shrink-0 text-muted-foreground"
+                              aria-hidden="true"
+                            />
+                            <span className="truncate font-medium">{nameOf(t.toUserId)}</span>
+                          </span>
+                          <span className="shrink-0 text-sm tabular-nums underline decoration-muted-foreground/60 decoration-dotted underline-offset-4">
+                            {formatMoney(t.cents, t.currency)}
+                          </span>
+                        </button>
                         {t.toUserId === meId ? (
                           <Button
                             size="icon-sm"
@@ -517,6 +587,11 @@ export default function GroupDetail() {
         onOpenChange={setExpenseOpen}
         groupId={group.id}
         expense={editingExpense}
+      />
+      <ExplainBalanceSheet
+        open={explainOpen}
+        onOpenChange={setExplainOpen}
+        target={explainTarget}
       />
       <AddMembersSheet open={addPeopleOpen} onOpenChange={setAddPeopleOpen} groupId={group.id} />
       <SettleUpSheet
