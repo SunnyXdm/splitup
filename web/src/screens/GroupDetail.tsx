@@ -55,7 +55,8 @@ import ExplainBalanceSheet, { type ExplainTarget } from '@/components/common/Exp
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import SettleUpSheet, { type SettleDirection } from '@/components/expense/SettleUpSheet';
 import AddMembersSheet from '@/components/group/AddMembersSheet';
-import ExpenseHistory from '@/components/group/ExpenseHistory';
+import FilteredHistory from '@/components/search/FilteredHistory';
+import GroupSummary from '@/components/summary/GroupSummary';
 import GroupFormFields, { type GroupFormValues } from '@/components/group/GroupFormFields';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { ApiError, errorMessage, isDepartedMember } from '@/lib/api';
@@ -71,6 +72,9 @@ import {
 } from '@/lib/queries';
 import type { Expense, User } from '@/lib/types';
 import { useOverlayNavigate } from '@/lib/use-history-dismiss';
+import { useParamState } from '@/lib/use-history-filters';
+
+const TABS = ['expenses', 'balances', 'summary'] as const;
 
 interface SettlePrefill {
   toUserId?: number;
@@ -101,6 +105,8 @@ export default function GroupDetail() {
   const [addPeopleOpen, setAddPeopleOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
   const [explainTarget, setExplainTarget] = useState<ExplainTarget | null>(null);
+  // In the URL so a reload (or Back from elsewhere) lands on the same tab.
+  const [tab, setTab] = useParamState('tab', TABS, 'expenses');
 
   if (!sync) return <GroupDetailSkeleton />;
 
@@ -138,6 +144,19 @@ export default function GroupDetail() {
   const expenses = groupExpenses(sync, group.id);
   const balances = groupBalances(sync, group.id);
   const transfers = groupSettlements(sync, group.id);
+  // "Paid by" choices: current members, plus anyone who paid here before
+  // leaving the group.
+  const payerIds = new Set(group.memberIds);
+  for (const e of expenses) for (const s of e.shares) if (s.paidCents > 0) payerIds.add(s.userId);
+  payerIds.delete(meId);
+  const payerPeople = [...payerIds]
+    .map((uid) => usersById.get(uid))
+    .filter((u): u is User => u !== undefined)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const editExpense = (e: Expense) => {
+    setEditingExpense(e);
+    setExpenseOpen(true);
+  };
 
   const explain = (target: ExplainTarget) => {
     setExplainTarget(target);
@@ -265,7 +284,11 @@ export default function GroupDetail() {
         </div>
       </header>
 
-      <Tabs defaultValue="expenses" className="gap-4">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as (typeof TABS)[number])}
+        className="gap-4"
+      >
         <TabsList className="w-full rounded-full p-1 group-data-horizontal/tabs:h-11">
           <TabsTrigger value="expenses" className="rounded-full">
             Expenses
@@ -273,29 +296,34 @@ export default function GroupDetail() {
           <TabsTrigger value="balances" className="rounded-full">
             Balances
           </TabsTrigger>
+          <TabsTrigger value="summary" className="rounded-full">
+            Summary
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="expenses">
-          {expenses.length === 0 ? (
-            <Empty className="rounded-[28px] bg-card py-12">
-              <EmptyHeader>
-                <EmptyMedia variant="icon" className="rounded-full">
-                  <ReceiptText />
-                </EmptyMedia>
-                <EmptyTitle>No expenses yet</EmptyTitle>
-                <EmptyDescription>Add the first expense with the + button.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : (
-            <ExpenseHistory
-              sync={sync}
-              expenses={expenses}
-              onSelect={(e) => {
-                setEditingExpense(e);
-                setExpenseOpen(true);
-              }}
-            />
-          )}
+          <FilteredHistory
+            sync={sync}
+            expenses={expenses}
+            people={payerPeople}
+            onSelect={editExpense}
+            placeholder={`Search ${group.name}`}
+            empty={
+              <Empty className="rounded-[28px] bg-card py-12">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon" className="rounded-full">
+                    <ReceiptText />
+                  </EmptyMedia>
+                  <EmptyTitle>No expenses yet</EmptyTitle>
+                  <EmptyDescription>Add the first expense with the + button.</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            }
+          />
+        </TabsContent>
+
+        <TabsContent value="summary">
+          <GroupSummary sync={sync} groupId={group.id} onSelect={editExpense} />
         </TabsContent>
 
         <TabsContent value="balances">

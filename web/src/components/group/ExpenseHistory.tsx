@@ -17,6 +17,7 @@ import {
 import { formatDateSafe } from '@/lib/dates';
 import { errorMessage } from '@/lib/api';
 import { formatMoney } from '@/lib/money';
+import { compareHistory } from '@/lib/search';
 import { useDeleteExpense } from '@/lib/queries';
 import type { Expense, SyncData } from '@/lib/types';
 
@@ -58,12 +59,7 @@ export default function ExpenseHistory({
   };
 
   // Defensive: a malformed row (old cache, server bug) must not crash the list.
-  const sorted = [...expenses].sort(
-    (a, b) =>
-      String(b.date ?? '').localeCompare(String(a.date ?? '')) ||
-      String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')) ||
-      b.id - a.id,
-  );
+  const sorted = [...expenses].sort(compareHistory);
   const months: { label: string; items: Expense[] }[] = [];
   for (const e of sorted) {
     const label = formatDateSafe(e.date, 'MMMM yyyy');

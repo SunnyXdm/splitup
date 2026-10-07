@@ -27,6 +27,8 @@ interface PickerSelectProps {
   "aria-labelledby"?: string
   /** Accessible name when there is no visible label at all. */
   "aria-label"?: string
+  /** Trigger text override (e.g. a filter chip reading "Paid by" at its default). */
+  displayLabel?: string
 }
 
 /**
@@ -47,6 +49,7 @@ function PickerSelect({
   className,
   "aria-labelledby": labelledBy,
   "aria-label": ariaLabel,
+  displayLabel,
 }: PickerSelectProps) {
   const [open, setOpen] = React.useState(false)
   const selected = options.find((o) => o.value === value)
@@ -77,7 +80,7 @@ function PickerSelect({
           </span>
         ) : null}
         <span id={valueId} className={cn("truncate", !selected && "text-muted-foreground")}>
-          {selected ? selected.label : placeholder}
+          {displayLabel ?? (selected ? selected.label : placeholder)}
         </span>
         <ChevronDownIcon
           aria-hidden="true"

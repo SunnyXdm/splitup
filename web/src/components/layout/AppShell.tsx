@@ -4,6 +4,7 @@ import {
   Activity as ActivityIcon,
   CircleUserRound,
   Plus,
+  Search,
   UserRound,
   Users,
 } from 'lucide-react';
@@ -89,12 +90,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {/* Desktop: theme toggle floats beside the pill nav */}
-      <div className="fixed top-7 right-6 z-40 hidden md:block">
+      {/* Desktop: search + theme toggle float beside the pill nav */}
+      <div className="fixed top-7 right-6 z-40 hidden items-center gap-2 md:flex">
+        <SearchButton active={pathname === '/search'} />
         <ThemeToggle />
       </div>
 
-      {/* Mobile: slim in-flow header — wordmark left, theme toggle right */}
+      {/* Mobile: slim in-flow header — wordmark left, search + theme toggle right */}
       <header className="mx-auto flex w-full max-w-3xl items-center justify-between px-4 pt-[max(1rem,env(safe-area-inset-top))] md:hidden">
         <Link
           to="/"
@@ -103,7 +105,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
           Splitup
           <span aria-hidden="true" className="size-1.5 rounded-full bg-signal" />
         </Link>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <SearchButton active={pathname === '/search'} />
+          <ThemeToggle />
+        </div>
       </header>
 
       <main className="mx-auto w-full max-w-3xl px-4 pt-6 pb-[calc(7.5rem+env(safe-area-inset-bottom))] md:pt-28 md:pb-16">
@@ -157,6 +162,23 @@ export default function AppShell({ children }: { children: ReactNode }) {
         friendId={friendId}
       />
     </div>
+  );
+}
+
+/** Round search entry, sized and styled to sit beside the theme toggle. */
+function SearchButton({ active }: { active: boolean }) {
+  return (
+    <Link
+      to="/search"
+      aria-label="Search all expenses"
+      aria-current={active ? 'page' : undefined}
+      className={cn(
+        'flex size-11 items-center justify-center rounded-full bg-card text-foreground shadow-[0_4px_24px_rgba(0,0,0,0.04)] outline-none transition-colors hover:text-muted-foreground focus-visible:ring-3 focus-visible:ring-ring/50',
+        active && 'bg-primary text-primary-foreground hover:text-primary-foreground/80',
+      )}
+    >
+      <Search className="size-5" aria-hidden="true" />
+    </Link>
   );
 }
 
