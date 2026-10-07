@@ -18,4 +18,5 @@ COPY --from=serverdeps /app/server/node_modules ./node_modules
 COPY server/ .
 COPY --from=webbuild /app/web/dist /app/web/dist
 EXPOSE 8790
-CMD ["npx", "tsx", "src/index.ts"]
+# node is PID 1 directly (no npm/npx wrapper) so SIGTERM reaches the app.
+CMD ["node", "--import", "tsx", "src/index.ts"]

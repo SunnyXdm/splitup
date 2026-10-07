@@ -8,6 +8,7 @@ import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
 import { ZodError } from 'zod';
 import { pruneExpired, type AppEnv } from './auth';
+import { backupDaily, checkpoint, db } from './db';
 import { csrfProtect, rateLimit, CSP } from './security';
 import authRoutes from './routes/auth';
 import meRoutes from './routes/me';
@@ -76,6 +77,31 @@ app.onError((err, c) => {
 pruneExpired();
 setInterval(pruneExpired, 6 * 60 * 60 * 1000).unref();
 
-serve({ fetch: app.fetch, port: PORT }, (info) => {
+const HOUR = 60 * 60 * 1000;
+const runBackup = () =>
+  backupDaily().catch((err) => console.error('backup failed', err));
+checkpoint();
+void runBackup();
+setInterval(checkpoint, HOUR).unref();
+setInterval(runBackup, 24 * HOUR).unref();
+
+const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`splitup api on http://localhost:${info.port}`);
 });
+
+// Docker stops with SIGTERM: finish in-flight requests, then close the db so
+// the WAL is checkpointed instead of being cut off by a SIGKILL.
+let stopping = false;
+function shutdown(signal: string) {
+  if (stopping) return;
+  stopping = true;
+  console.log(`${signal}: shutting down`);
+  const close = () => {
+    db.close();
+    process.exit(0);
+  };
+  server.close(close);
+  setTimeout(close, 5000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

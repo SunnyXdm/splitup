@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
 const DB_PATH =
@@ -153,3 +153,25 @@ export interface ActivityRow {
 }
 
 export const nowIso = () => new Date().toISOString();
+
+// SQLite only folds the WAL back into the main file opportunistically, so
+// without this the -wal file holds days of committed data and a copy of
+// splitup.db alone is stale. TRUNCATE also shrinks the -wal file to zero.
+export function checkpoint(): void {
+  db.pragma('wal_checkpoint(TRUNCATE)');
+}
+
+const BACKUP_DIR = path.join(path.dirname(DB_PATH), 'backups');
+const BACKUP_KEEP = 7;
+
+/** Consistent daily snapshot (online backup API), keeping the newest 7. */
+export async function backupDaily(): Promise<void> {
+  mkdirSync(BACKUP_DIR, { recursive: true });
+  const file = path.join(BACKUP_DIR, `splitup-${nowIso().slice(0, 10)}.db`);
+  await db.backup(file);
+  const old = readdirSync(BACKUP_DIR)
+    .filter((f) => /^splitup-\d{4}-\d{2}-\d{2}\.db$/.test(f))
+    .sort()
+    .slice(0, -BACKUP_KEEP);
+  for (const f of old) rmSync(path.join(BACKUP_DIR, f));
+}

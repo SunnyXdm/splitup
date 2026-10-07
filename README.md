@@ -103,8 +103,9 @@ docker run -d -p 8790:8790 \
 ```
 
 > [!IMPORTANT]
-> Mount a volume for the database. SQLite runs in WAL mode — back up the `.db`,
-> `.db-wal`, and `.db-shm` files together, or use `sqlite3 ... "VACUUM INTO ..."`.
+> Mount a volume for the database. The server checkpoints the WAL hourly and on
+> shutdown, and writes a consistent daily snapshot to `backups/` next to the database
+> (newest 7 kept). Copy those snapshots off the host for real backups.
 
 ### Configuration
 
