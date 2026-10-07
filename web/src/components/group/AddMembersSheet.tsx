@@ -54,6 +54,9 @@ import {
 } from '@/lib/queries';
 import type { User } from '@/lib/types';
 
+/** Friend lists longer than this get a filter field. */
+const FILTER_AFTER = 6;
+
 interface AddMembersSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -94,6 +97,8 @@ function SheetBody({ groupId }: { groupId: number }) {
   const [guestName, setGuestName] = useState('');
   const [renameTarget, setRenameTarget] = useState<User | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [guestOpen, setGuestOpen] = useState(false);
+  const [filter, setFilter] = useState('');
 
   const group = sync?.groups.find((g) => g.id === groupId);
   const userOf = (id: number): User =>
@@ -104,6 +109,12 @@ function SheetBody({ groupId }: { groupId: number }) {
     sync && group
       ? sync.friendIds.filter((id) => !group.memberIds.includes(id)).map(userOf)
       : [];
+  const needle = filter.trim().toLowerCase();
+  const shownCandidates = needle
+    ? candidates.filter(
+        (u) => u.name.toLowerCase().includes(needle) || u.email?.toLowerCase().includes(needle),
+      )
+    : candidates;
   // A member is removable only when settled in every currency (server enforces
   // the same rule) — and never the creator or yourself (use Leave for that).
   const unsettled = new Set(
@@ -146,6 +157,7 @@ function SheetBody({ groupId }: { groupId: number }) {
         onSuccess: () => {
           toast.success(`${name} added as a guest`);
           setGuestName('');
+          setGuestOpen(false);
         },
         onError: (err) => toast.error(errorMessage(err)),
       },
@@ -220,9 +232,73 @@ function SheetBody({ groupId }: { groupId: number }) {
       <SheetHeader className="pb-0">
         <SheetTitle className="text-xl">People</SheetTitle>
       </SheetHeader>
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-        <div className="flex flex-col gap-1">
-          <span className="eyebrow">Members</span>
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        {/* The two ways in for people who aren't your friends yet, up top. */}
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size="pill"
+            disabled={!online || createInvite.isPending}
+            onClick={copyInvite}
+          >
+            {createInvite.isPending ? (
+              <Spinner data-icon="inline-start" />
+            ) : (
+              <Link2 data-icon="inline-start" aria-hidden="true" />
+            )}
+            Copy invite link
+          </Button>
+          <Button
+            variant="outline"
+            size="pill"
+            aria-expanded={guestOpen}
+            onClick={() => setGuestOpen((o) => !o)}
+          >
+            <UserRoundPlus data-icon="inline-start" aria-hidden="true" />
+            Add guest
+          </Button>
+        </div>
+        {guestOpen ? (
+          <form onSubmit={submitGuest} className="rounded-panel bg-muted/50 p-4">
+            <Field>
+              <FieldLabel htmlFor="guest-name">Guest&rsquo;s name</FieldLabel>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="guest-name"
+                  value={guestName}
+                  maxLength={GUEST_NAME_MAX}
+                  onChange={(e) => setGuestName(e.target.value)}
+                  placeholder="Name"
+                  autoComplete="off"
+                  autoFocus
+                  className="h-11 flex-1 rounded-full px-4"
+                />
+                <Button
+                  type="submit"
+                  variant="outline"
+                  className="h-11 rounded-full px-4"
+                  disabled={!online || addGuest.isPending || normalizeGuestName(guestName) === null}
+                >
+                  {addGuest.isPending ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <UserRoundPlus data-icon="inline-start" aria-hidden="true" />
+                  )}
+                  Add
+                </Button>
+              </div>
+              <FieldDescription>
+                For people without Splitup — you track their share. They can claim it later with a
+                link.
+              </FieldDescription>
+            </Field>
+          </form>
+        ) : null}
+
+        <section className="flex flex-col gap-1" aria-labelledby="people-members">
+          <h3 id="people-members" className="eyebrow px-1">
+            Members · {members.length}
+          </h3>
           {members.map((u) => {
             const isMe = u.id === sync?.me.id;
             const isCreator = u.id === group?.createdBy;
@@ -232,8 +308,8 @@ function SheetBody({ groupId }: { groupId: number }) {
             return (
               <div key={u.id} className="flex min-h-12 items-center gap-3 rounded-2xl px-3">
                 <UserAvatar user={u} size="sm" />
-                <span className="flex min-w-0 flex-1 items-center gap-2">
-                  <span className="truncate text-sm font-medium">{isMe ? 'You' : u.name}</span>
+                <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <span className="text-sm font-medium break-words">{isMe ? 'You' : u.name}</span>
                   {guest ? <GuestPill /> : null}
                 </span>
                 {isCreator ? (
@@ -247,8 +323,8 @@ function SheetBody({ groupId }: { groupId: number }) {
                       render={
                         <Button
                           variant="ghost"
-                          size="icon-sm"
-                          className="rounded-full"
+                          size="icon"
+                          className="size-11 rounded-full"
                           disabled={!online}
                         />
                       }
@@ -280,8 +356,8 @@ function SheetBody({ groupId }: { groupId: number }) {
                 ) : removable ? (
                   <Button
                     variant="ghost"
-                    size="icon-sm"
-                    className="rounded-full"
+                    size="icon"
+                    className="size-11 rounded-full"
                     aria-label={`Remove ${u.name}`}
                     disabled={!online || removeMember.isPending}
                     onClick={() => setRemoveTarget(u)}
@@ -292,80 +368,51 @@ function SheetBody({ groupId }: { groupId: number }) {
               </div>
             );
           })}
-        </div>
+        </section>
+
 
         {candidates.length > 0 ? (
-          <div className="flex flex-col gap-1">
-            <span className="eyebrow">Add friends</span>
-            {candidates.map((u) => (
-              <button
-                key={u.id}
-                type="button"
-                disabled={!online || pendingId !== null}
-                onClick={() => add(u.id, u.name)}
-                className="flex min-h-12 w-full items-center gap-3 rounded-2xl px-3 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-focus-ring disabled:opacity-50"
-              >
-                <UserAvatar user={u} size="sm" />
-                <span className="min-w-0 flex-1 truncate font-medium">{u.name}</span>
-                {pendingId === u.id ? (
-                  <Spinner className="size-4" />
-                ) : (
-                  <UserRoundPlus aria-hidden="true" className="size-4 text-muted-foreground" />
-                )}
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        <form onSubmit={submitGuest}>
-          <Field>
-            <FieldLabel htmlFor="guest-name" className="eyebrow">
-              Add a guest
-            </FieldLabel>
-            <div className="flex items-center gap-2">
+          <section className="flex flex-col gap-2" aria-labelledby="people-friends">
+            <h3 id="people-friends" className="eyebrow px-1">
+              Add friends
+            </h3>
+            {candidates.length > FILTER_AFTER ? (
               <Input
-                id="guest-name"
-                value={guestName}
-                maxLength={GUEST_NAME_MAX}
-                onChange={(e) => setGuestName(e.target.value)}
-                placeholder="Name"
+                type="search"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Filter friends"
+                aria-label="Filter friends"
                 autoComplete="off"
-                className="h-11 flex-1 rounded-full px-4"
-              />
-              <Button
-                type="submit"
-                variant="outline"
                 className="h-11 rounded-full px-4"
-                disabled={!online || addGuest.isPending || normalizeGuestName(guestName) === null}
-              >
-                {addGuest.isPending ? (
-                  <Spinner data-icon="inline-start" />
-                ) : (
-                  <UserRoundPlus data-icon="inline-start" aria-hidden="true" />
-                )}
-                Add
-              </Button>
+              />
+            ) : null}
+            <div className="flex flex-col gap-1">
+              {shownCandidates.length === 0 ? (
+                <p className="px-3 py-2 text-sm text-muted-foreground">
+                  No friends match &ldquo;{filter.trim()}&rdquo;.
+                </p>
+              ) : null}
+              {shownCandidates.map((u) => (
+                <button
+                  key={u.id}
+                  type="button"
+                  disabled={!online || pendingId !== null}
+                  onClick={() => add(u.id, u.name)}
+                  className="flex min-h-12 w-full items-center gap-3 rounded-full px-3 text-left text-sm transition-colors outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-focus-ring disabled:opacity-50"
+                >
+                  <UserAvatar user={u} size="sm" />
+                  <span className="min-w-0 flex-1 font-medium break-words">{u.name}</span>
+                  {pendingId === u.id ? (
+                    <Spinner className="size-4" />
+                  ) : (
+                    <UserRoundPlus aria-hidden="true" className="size-4 text-muted-foreground" />
+                  )}
+                </button>
+              ))}
             </div>
-            <FieldDescription>
-              For people without Splitup — you track their share. They can claim it later with a
-              link.
-            </FieldDescription>
-          </Field>
-        </form>
-
-        <Button
-          variant="outline"
-          className="h-11 rounded-full"
-          disabled={!online || createInvite.isPending}
-          onClick={copyInvite}
-        >
-          {createInvite.isPending ? (
-            <Spinner data-icon="inline-start" />
-          ) : (
-            <Link2 data-icon="inline-start" aria-hidden="true" />
-          )}
-          Copy invite link
-        </Button>
+          </section>
+        ) : null}
       </div>
 
       <AlertDialog

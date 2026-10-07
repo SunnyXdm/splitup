@@ -9,11 +9,13 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ExpenseDetailSheets } from '@/components/expense/ExpenseDetailSheet';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import { PageHeader } from '@/components/layout/PageHeader';
 import FilteredHistory from '@/components/search/FilteredHistory';
 import { useSyncData } from '@/lib/queries';
 import type { Expense } from '@/lib/types';
+import { useExpenseDetail } from '@/lib/use-expense-detail';
 
 /** Global search across every expense and payment on this device (works offline). */
 export default function Search() {
@@ -21,6 +23,8 @@ export default function Search() {
   const [params] = useSearchParams();
   const [editing, setEditing] = useState<Expense | undefined>();
   const [expenseOpen, setExpenseOpen] = useState(false);
+  // A result opens its detail (or a payment's receipt) first; Edit from there.
+  const detail = useExpenseDetail(sync);
 
   const people = useMemo(
     () =>
@@ -49,6 +53,8 @@ export default function Search() {
   return (
     <div className="flex flex-col gap-4 pb-6">
       <PageHeader title="Search" />
+      {/* Settle-ups fold into one row per payment (ExpenseHistory's default);
+          a filter that keeps only part of one shows just that part. */}
       <FilteredHistory
         sync={sync}
         expenses={sync.expenses}
@@ -59,10 +65,7 @@ export default function Search() {
         // reload, a link from Insights): don't pop the keyboard over results.
         autoFocus={params.toString() === ''}
         placeholder="Search all expenses"
-        onSelect={(e) => {
-          setEditing(e);
-          setExpenseOpen(true);
-        }}
+        onSelect={detail.open}
         empty={
           <Empty className="bg-card rounded-[28px] py-12">
             <EmptyHeader>
@@ -84,6 +87,13 @@ export default function Search() {
         groupId={editing?.groupId ?? null}
         expense={editing}
         friendId={directFriendId}
+      />
+      <ExpenseDetailSheets
+        detail={detail}
+        onEdit={(e) => {
+          setEditing(e);
+          setExpenseOpen(true);
+        }}
       />
     </div>
   );

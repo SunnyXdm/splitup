@@ -10,7 +10,7 @@ export function MyGroupBalance({ balances }: { balances: NetBalance[] }) {
       ) : (
         balances.map((b) => (
           <span key={b.currency} className="flex flex-col items-end">
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-sm text-muted-foreground">
               {b.netCents > 0 ? 'you are owed' : 'you owe'}
             </span>
             <MoneyText
@@ -18,7 +18,7 @@ export function MyGroupBalance({ balances }: { balances: NetBalance[] }) {
               animate
               cents={b.netCents}
               currency={b.currency}
-              className="text-sm font-medium"
+              className="text-base font-medium whitespace-nowrap"
             />
           </span>
         ))
