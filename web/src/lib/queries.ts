@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-query';
 import { del } from 'idb-keyval';
 import { api } from './api';
+import { withGroupArchived } from './archive';
 import { broadcastSignOut, clearSignedOut, markSignedOut } from './auth-session';
 import { netCash } from './settlement-batches';
 import { clearAllDrafts, clearOtherUsersDrafts } from './draft-store';
@@ -167,6 +168,52 @@ export function useLeaveGroup() {
   return useMutation({
     mutationFn: (id: number) => api<void>(`/api/groups/${id}/leave`, { method: 'POST' }),
     ...useSyncInvalidation(),
+  });
+}
+
+export interface ArchiveGroupVars {
+  groupId: number;
+  archived: boolean;
+}
+
+/**
+ * Personal archive toggle (hides the group from my Home only). Optimistic:
+ * the flag flips immediately; a failure restores the previous value unless
+ * something newer (a refetch, a later toggle) has replaced it meanwhile.
+ */
+export function useArchiveGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    // Serialized: an Undo tapped while the first request is in flight must
+    // reach the server after it, or the two could land in the wrong order.
+    scope: { id: 'group-archive' },
+    mutationFn: ({ groupId, archived }: ArchiveGroupVars) =>
+      api<Group>(`/api/groups/${groupId}/archive`, { method: archived ? 'PUT' : 'DELETE' }),
+    onMutate: async ({ groupId, archived }) => {
+      await qc.cancelQueries({ queryKey: SYNC_KEY });
+      const group = qc.getQueryData<SyncData>(SYNC_KEY)?.groups.find((g) => g.id === groupId);
+      const prev = group?.archivedAt ?? null;
+      const optimistic = archived ? new Date().toISOString() : null;
+      patchSync(qc, (sync) => withGroupArchived(sync, groupId, optimistic));
+      return { prev, optimistic };
+    },
+    onSuccess: (group) => {
+      patchSync(qc, (sync) => withGroupArchived(sync, group.id, group.archivedAt ?? null));
+    },
+    onError: (_err, { groupId }, ctx) => {
+      if (!ctx) return;
+      patchSync(qc, (sync) => {
+        const current = sync.groups.find((g) => g.id === groupId)?.archivedAt ?? null;
+        return current === ctx.optimistic ? withGroupArchived(sync, groupId, ctx.prev) : sync;
+      });
+    },
+    // Never refetch over an in-flight optimistic expense write (it would
+    // flicker its rows away); that write's own re-sync picks this up.
+    onSettled: () => {
+      if (qc.isMutating({ mutationKey: EXPENSE_WRITE_KEY }) === 0) {
+        return qc.invalidateQueries({ queryKey: SYNC_KEY });
+      }
+    },
   });
 }
 

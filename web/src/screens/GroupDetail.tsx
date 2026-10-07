@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useParams } from 'react-router';
 import { toast } from 'sonner';
 import {
+  Archive,
+  ArchiveRestore,
   BellRing,
   ChevronRight,
   Download,
@@ -63,6 +65,7 @@ import { useOnline } from '@/components/layout/OfflineBanner';
 import { ApiError, errorMessage, isDepartedMember } from '@/lib/api';
 import { buildGroupCsv, downloadCsv } from '@/lib/export-csv';
 import { reminderText, sendReminder } from '@/lib/remind';
+import { myOpenGroupBalances } from '@/lib/archive';
 import { groupBalances, groupExpenses, groupSettlements } from '@/lib/balances';
 import { formatMoney } from '@/lib/money';
 import {
@@ -72,6 +75,7 @@ import {
   useUpdateGroup,
 } from '@/lib/queries';
 import type { Expense, User } from '@/lib/types';
+import { useArchiveToggle } from '@/lib/use-archive-group';
 import { useOverlayNavigate } from '@/lib/use-history-dismiss';
 import { useParamState } from '@/lib/use-history-filters';
 
@@ -95,6 +99,7 @@ export default function GroupDetail() {
   const updateGroup = useUpdateGroup();
   const leaveGroup = useLeaveGroup();
   const deleteGroup = useDeleteGroup();
+  const toggleArchive = useArchiveToggle();
 
   const [editValues, setEditValues] = useState<GroupFormValues | null>(null);
   const [leaveOpen, setLeaveOpen] = useState(false);
@@ -145,6 +150,8 @@ export default function GroupDetail() {
   const expenses = groupExpenses(sync, group.id);
   const balances = groupBalances(sync, group.id);
   const transfers = groupSettlements(sync, group.id);
+  const archived = group.archivedAt != null;
+  const stillOwing = archived && myOpenGroupBalances(sync, group.id).length > 0;
   // "Paid by" choices: current members, plus anyone who paid here before
   // leaving the group.
   const payerIds = new Set(group.memberIds);
@@ -271,6 +278,20 @@ export default function GroupDetail() {
               >
                 <Download aria-hidden="true" /> Export expenses
               </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!online}
+                onClick={() => toggleArchive(group, !archived)}
+              >
+                {archived ? (
+                  <>
+                    <ArchiveRestore aria-hidden="true" /> Unarchive
+                  </>
+                ) : (
+                  <>
+                    <Archive aria-hidden="true" /> Archive
+                  </>
+                )}
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setLeaveOpen(true)}>
                 <LogOut aria-hidden="true" /> Leave group
@@ -284,6 +305,16 @@ export default function GroupDetail() {
           </DropdownMenu>
         </div>
       </header>
+
+      {archived && (
+        <p className="-mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+          <Archive className="size-4 shrink-0" aria-hidden="true" />
+          <span>
+            Archived — hidden from your Home.
+            {stillOwing ? ' You still have a balance here.' : null}
+          </span>
+        </p>
+      )}
 
       <DraftsChip scope={{ kind: 'group', groupId: group.id }} className="self-start" />
 

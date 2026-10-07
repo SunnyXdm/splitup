@@ -7,6 +7,7 @@ import { useNotificationNavigation, usePushReconcile } from '@/lib/push-hooks';
 import { useSyncData } from '@/lib/queries';
 import Account from './screens/Account';
 import Activity from './screens/Activity';
+import ArchivedGroups from './screens/ArchivedGroups';
 import FriendDetail from './screens/FriendDetail';
 import Friends from './screens/Friends';
 import GroupDetail from './screens/GroupDetail';
@@ -54,6 +55,7 @@ export default function App() {
       <AppShell>
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/groups/archived" element={<ArchivedGroups />} />
           <Route path="/groups/:id" element={<GroupDetail />} />
           <Route path="/friends" element={<Friends />} />
           <Route path="/friends/:id" element={<FriendDetail />} />

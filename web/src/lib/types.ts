@@ -29,6 +29,8 @@ export interface Group {
   createdBy: number;
   createdAt: string;
   memberIds: number[];
+  /** When I archived this group (hidden from my Home only); null/absent if not. */
+  archivedAt?: string | null;
 }
 
 export interface ExpenseShare {

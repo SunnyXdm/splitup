@@ -55,8 +55,10 @@ app.get('/', (c) => {
     .map((r) => r.friend_id);
 
   const groupRows = db
-    .prepare<[number], GroupRow>(
-      `SELECT g.* FROM groups g JOIN group_members gm ON gm.group_id = g.id AND g.deleted_at IS NULL
+    .prepare<[number], GroupRow & { my_archived_at: string | null }>(
+      `SELECT g.*, p.archived_at AS my_archived_at
+       FROM groups g JOIN group_members gm ON gm.group_id = g.id AND g.deleted_at IS NULL
+       LEFT JOIN group_prefs p ON p.group_id = g.id AND p.user_id = gm.user_id
        WHERE gm.user_id = ? ORDER BY g.created_at, g.id`,
     )
     .all(me.id);
@@ -185,7 +187,7 @@ app.get('/', (c) => {
     me: toMe(me),
     users,
     friendIds,
-    groups: groupRows.map((g) => toGroup(g, membersByGroup.get(g.id) ?? [])),
+    groups: groupRows.map((g) => toGroup(g, membersByGroup.get(g.id) ?? [], g.my_archived_at)),
     expenses: expenseRows.map((e) => toExpense(e, sharesByExpense.get(e.id) ?? [])),
     settlementBatches,
     activity: activityRows.map(toActivity),

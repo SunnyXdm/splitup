@@ -10,6 +10,7 @@ import {
   type SettlementBatch,
 } from '../lib/wire';
 import { notifySettlement, notifySettlementUndone } from '../lib/notify-events';
+import { unarchiveAffected } from '../lib/archive';
 import {
   areFriends,
   assertDepartedUnchanged,
@@ -255,6 +256,9 @@ app.post('/', async (c) => {
       );
       created.push(expenseWire(id));
     }
+    // Both people the cash moved between see the settle-up again.
+    const groups = new Set(body.rows.flatMap((r) => (r.groupId === null ? [] : [r.groupId])));
+    for (const gid of groups) unarchiveAffected(gid, pair);
     return { expenses: created, batchId };
   })();
 
@@ -310,6 +314,8 @@ app.delete('/:batchId', (c) => {
       'UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
     );
     for (const row of rows) del.run(now, now, row.id);
+    // Undoing reopens debts: whoever is unsettled again gets the group back.
+    for (const gid of groupIds) unarchiveAffected(gid, []);
     const amount = formatPaymentAmount(batch.amount_cents, batch.currency);
     // A settle recorded entirely inside one group stays in that group's feed;
     // anything else is tied to a row both people hold a share in, so both see it.

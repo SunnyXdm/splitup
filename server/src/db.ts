@@ -162,6 +162,18 @@ db.exec(
   'CREATE INDEX IF NOT EXISTS idx_expenses_settlement_batch ON expenses(settlement_batch_id) WHERE settlement_batch_id IS NOT NULL',
 );
 
+// Per-user group preferences. archived_at hides a finished group from that
+// user's Home only — unlike groups.deleted_at, which removes it for everyone.
+db.exec(`
+CREATE TABLE IF NOT EXISTS group_prefs (
+  group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  archived_at TEXT,
+  PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_prefs_user ON group_prefs(user_id);
+`);
+
 // Small key/value store for server-generated config (e.g. VAPID keys) that
 // must survive restarts.
 db.exec(`

@@ -7,6 +7,7 @@ import { groupCreateBody, groupPatchBody, idParam, memberBody } from '../validat
 import { readJson, toGroup } from '../lib/wire';
 import { areFriends, groupMemberIds, isMember, memberGroupOr404, recordActivity } from '../lib/expense';
 import { notifyAddedToGroup } from '../lib/notify-events';
+import { archiveGroup, archivedAtFor, clearGroupPrefs, unarchiveGroup } from '../lib/archive';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -49,6 +50,7 @@ function leaveGroup(group: GroupRow, me: UserRow): void {
   }
   db.transaction(() => {
     db.prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?').run(group.id, me.id);
+    clearGroupPrefs(group.id, me.id);
     if (others.length === 0) {
       db.prepare('UPDATE groups SET deleted_at = ? WHERE id = ?').run(nowIso(), group.id);
       db.prepare('DELETE FROM group_invites WHERE group_id = ?').run(group.id);
@@ -114,7 +116,7 @@ app.patch('/:id', async (c) => {
     }
   })();
   const updated = db.prepare<[number], GroupRow>('SELECT * FROM groups WHERE id = ?').get(id)!;
-  return c.json(toGroup(updated, groupMemberIds(id)));
+  return c.json(toGroup(updated, groupMemberIds(id), archivedAtFor(id, me.id)));
 });
 
 app.delete('/:id', (c) => {
@@ -184,7 +186,7 @@ app.post('/:id/members', async (c) => {
     return added;
   })();
   if (added) notifyAddedToGroup(me, userId, group);
-  return c.json(toGroup(group, groupMemberIds(id)));
+  return c.json(toGroup(group, groupMemberIds(id), archivedAtFor(id, me.id)));
 });
 
 app.delete('/:id/members/:userId', (c) => {
@@ -206,6 +208,7 @@ app.delete('/:id/members/:userId', (c) => {
   if (memberUnsettled(id, targetId)) throw new HTTPException(409, { message: 'unsettled' });
   db.transaction(() => {
     db.prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?').run(id, targetId);
+    clearGroupPrefs(id, targetId);
     const target = db
       .prepare<[number], { name: string }>('SELECT name FROM users WHERE id = ?')
       .get(targetId)!;
@@ -218,6 +221,26 @@ app.delete('/:id/members/:userId', (c) => {
     );
   })();
   return c.body(null, 204);
+});
+
+/**
+ * Personal archive: hides the group from MY Home only. Members only (404
+ * otherwise); idempotent. The group stays in sync and in every balance.
+ */
+app.put('/:id/archive', (c) => {
+  const me = c.get('user');
+  const id = idParam.parse(c.req.param('id'));
+  const group = memberGroupOr404(id, me.id);
+  const archivedAt = archiveGroup(id, me.id);
+  return c.json(toGroup(group, groupMemberIds(id), archivedAt));
+});
+
+app.delete('/:id/archive', (c) => {
+  const me = c.get('user');
+  const id = idParam.parse(c.req.param('id'));
+  const group = memberGroupOr404(id, me.id);
+  unarchiveGroup(id, me.id);
+  return c.json(toGroup(group, groupMemberIds(id), null));
 });
 
 app.post('/:id/invites', (c) => {

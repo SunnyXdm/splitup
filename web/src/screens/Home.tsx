@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
-import { ArrowUpRight, ChartPie, ChevronRight, Plus, UsersRound } from 'lucide-react';
+import { Archive, ArrowUpRight, ChartPie, ChevronRight, Plus, UsersRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -19,14 +19,14 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
-import { MoneyText } from '@/components/common/MoneyText';
 import { DraftsChip } from '@/components/expense/DraftsSheet';
 import { GROUP_EMOJI } from '@/components/group/group-emoji';
 import GroupFormFields, { type GroupFormValues } from '@/components/group/GroupFormFields';
+import { MyGroupBalance } from '@/components/group/MyGroupBalance';
 import { useOnline } from '@/components/layout/OfflineBanner';
 import { NumberTicker } from '@/components/ui/number-ticker';
+import { myOpenGroupBalances, partitionGroups } from '@/lib/archive';
 import {
-  groupBalances,
   myGrossBalances,
   myTotalBalance,
   type CurrencyAmount,
@@ -37,7 +37,7 @@ import { resolveDateRange } from '@/lib/search';
 import { personalSummary } from '@/lib/summary';
 import { errorMessage } from '@/lib/api';
 import { useCreateGroup, useSyncData } from '@/lib/queries';
-import type { SyncData } from '@/lib/types';
+import type { Group, SyncData } from '@/lib/types';
 import { useOverlayNavigate } from '@/lib/use-history-dismiss';
 
 export default function Home() {
@@ -46,7 +46,10 @@ export default function Home() {
 
   if (!sync) return <HomeSkeleton />;
 
+  // Totals span every group, archived ones included: archiving only tidies
+  // the list below, it never hides money.
   const totals = myTotalBalance(sync).filter((t) => t.netCents !== 0);
+  const { active, archived } = partitionGroups(sync.groups);
   const gross = myGrossBalances(sync);
   return (
     <div className="flex flex-col gap-8 pb-6">
@@ -70,7 +73,16 @@ export default function Home() {
         {sync.groups.length === 0 ? (
           <NoGroups onCreate={() => setCreateOpen(true)} />
         ) : (
-          <GroupList sync={sync} />
+          <>
+            {active.length > 0 ? (
+              <GroupList sync={sync} groups={active} />
+            ) : (
+              <p className="px-1 text-sm text-muted-foreground">
+                All your groups are archived.
+              </p>
+            )}
+            {archived.length > 0 && <ArchivedLink count={archived.length} />}
+          </>
         )}
       </section>
       <NewGroupDialog
@@ -207,55 +219,46 @@ function InsightsCard({ sync }: { sync: SyncData }) {
   );
 }
 
-function GroupList({ sync }: { sync: SyncData }) {
+function GroupList({ sync, groups }: { sync: SyncData; groups: Group[] }) {
   return (
     <div className="flex flex-col gap-3">
-      {sync.groups.map((g, i) => {
-        const mine = groupBalances(sync, g.id).filter(
-          (b) => b.userId === sync.me.id && b.netCents !== 0,
-        );
-        return (
-          <Link
-            key={g.id}
-            to={`/groups/${g.id}`}
-            className="flex min-h-20 items-center gap-4 rounded-[28px] bg-card p-4 transition-colors animate-in fade-in slide-in-from-bottom-2 fill-mode-backwards duration-300 hover:bg-secondary motion-reduce:animate-none"
-            style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
+      {groups.map((g, i) => (
+        <Link
+          key={g.id}
+          to={`/groups/${g.id}`}
+          className="flex min-h-20 items-center gap-4 rounded-[28px] bg-card p-4 transition-colors animate-in fade-in slide-in-from-bottom-2 fill-mode-backwards duration-300 hover:bg-secondary motion-reduce:animate-none"
+          style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
+        >
+          <span
+            className="flex size-12 shrink-0 items-center justify-center rounded-full bg-background text-2xl"
+            aria-hidden="true"
           >
-            <span
-              className="flex size-12 shrink-0 items-center justify-center rounded-full bg-background text-2xl"
-              aria-hidden="true"
-            >
-              {g.emoji}
+            {g.emoji}
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate font-medium">{g.name}</span>
+            <span className="text-sm text-muted-foreground">
+              {g.memberIds.length === 1 ? 'Just you' : `${g.memberIds.length} members`}
             </span>
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate font-medium">{g.name}</span>
-              <span className="text-sm text-muted-foreground">
-                {g.memberIds.length === 1 ? 'Just you' : `${g.memberIds.length} members`}
-              </span>
-            </span>
-            <span className="flex shrink-0 flex-col items-end gap-0.5">
-              {mine.length === 0 ? (
-                <span className="text-sm text-muted-foreground">settled up</span>
-              ) : (
-                mine.map((b) => (
-                  <span key={b.currency} className="flex flex-col items-end">
-                    <span className="text-[11px] text-muted-foreground">
-                      {b.netCents > 0 ? 'you are owed' : 'you owe'}
-                    </span>
-                    <MoneyText
-                      signed
-                      cents={b.netCents}
-                      currency={b.currency}
-                      className="text-sm font-medium"
-                    />
-                  </span>
-                ))
-              )}
-            </span>
-          </Link>
-        );
-      })}
+          </span>
+          <MyGroupBalance balances={myOpenGroupBalances(sync, g.id)} />
+        </Link>
+      ))}
     </div>
+  );
+}
+
+/** Quiet row under the list: the way into groups I archived. */
+function ArchivedLink({ count }: { count: number }) {
+  return (
+    <Link
+      to="/groups/archived"
+      className="flex min-h-12 items-center gap-3 rounded-full px-4 text-sm text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+    >
+      <Archive className="size-4 shrink-0" aria-hidden="true" />
+      <span className="flex-1">Archived ({count})</span>
+      <ChevronRight className="size-4 shrink-0" aria-hidden="true" />
+    </Link>
   );
 }
 

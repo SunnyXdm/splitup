@@ -32,6 +32,8 @@ export interface Group {
   createdBy: number;
   createdAt: string;
   memberIds: number[];
+  /** When the current user archived this group (hidden from their Home); null if not. */
+  archivedAt: string | null;
 }
 
 export interface ExpenseShare {
@@ -151,7 +153,11 @@ export const toUser = (r: UserRow): User => ({
 
 export const toMe = (r: UserRow): Me => ({ ...toUser(r), defaultCurrency: r.default_currency });
 
-export const toGroup = (r: GroupRow, memberIds: number[]): Group => ({
+export const toGroup = (
+  r: GroupRow,
+  memberIds: number[],
+  archivedAt: string | null = null,
+): Group => ({
   id: r.id,
   name: r.name,
   emoji: r.emoji,
@@ -159,6 +165,7 @@ export const toGroup = (r: GroupRow, memberIds: number[]): Group => ({
   createdBy: r.created_by,
   createdAt: r.created_at,
   memberIds,
+  archivedAt,
 });
 
 export const toShare = (s: ShareRow): ExpenseShare => ({

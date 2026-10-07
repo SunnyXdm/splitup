@@ -5,6 +5,7 @@ import { db, nowIso } from '../db';
 import { expenseCreateBody, expensePatchBody, idParam } from '../validate';
 import { readJson } from '../lib/wire';
 import { notifyExpense } from '../lib/notify-events';
+import { participantsOf, unarchiveAffected } from '../lib/archive';
 import {
   assertDepartedUnchanged,
   checkExpenseInput,
@@ -68,6 +69,7 @@ app.post('/', async (c) => {
       ? paymentSummary(body.shares, body.groupId, body.currency)
       : expenseSummary('added', me, description, body.groupId, shareUserIds);
     recordActivity(me.id, body.isPayment ? 'payment_added' : 'expense_added', body.groupId, id, summary);
+    if (body.groupId !== null) unarchiveAffected(body.groupId, participantsOf(body.shares));
     return expenseWire(id);
   })();
   notifyExpense('created', me, expense);
@@ -142,6 +144,7 @@ app.patch('/:id', async (c) => {
       ? `${me.name} updated a payment: ${paymentSummary(body.shares, body.groupId, body.currency)}`
       : expenseSummary('updated', me, description, body.groupId, shareUserIds);
     recordActivity(me.id, 'expense_updated', body.groupId, id, summary);
+    if (body.groupId !== null) unarchiveAffected(body.groupId, participantsOf(body.shares));
     return expenseWire(id);
   })();
   notifyExpense(
@@ -184,6 +187,8 @@ app.delete('/:id', (c) => {
         shares.map((s) => s.user_id),
       ),
     );
+    // A deletion adds no participant, but can reopen someone's balance.
+    if (row.group_id !== null) unarchiveAffected(row.group_id, []);
   })();
   notifyExpense('deleted', me, {
     id,
