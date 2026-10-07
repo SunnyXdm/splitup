@@ -132,6 +132,24 @@ db.exec(
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_client_key ON expenses(created_by, client_key) WHERE client_key IS NOT NULL',
 );
 
+// Small key/value store for server-generated config (e.g. VAPID keys) that
+// must survive restarts.
+db.exec(`
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
+`);
+
 export interface UserRow {
   id: number;
   shoo_sub: string;

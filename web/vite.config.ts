@@ -19,6 +19,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
       registerType: "prompt",
       injectRegister: false,
       includeAssets: ["favicon.svg", "apple-touch-icon.png"],
@@ -41,19 +44,17 @@ export default defineConfig({
           },
         ],
       },
-      workbox: {
-        navigateFallback: "/index.html",
-        navigateFallbackDenylist: [/^\/api\//],
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/[^/]+\.googleusercontent\.com\/.*/i,
-            handler: "CacheFirst",
-            options: {
-              cacheName: "avatars",
-              expiration: { maxEntries: 50, maxAgeSeconds: 2592000 },
-            },
-          },
-        ],
+      // Custom worker (src/sw.ts): the same precache / SPA fallback / avatar
+      // cache the generated one had, plus Web Push handlers.
+      injectManifest: {
+        globPatterns: ["**/*.{js,css,html}"],
+      },
+      // Opt-in SW in `vite dev` (SW_DEV=1 npm run dev) for testing push locally;
+      // off by default so dev never serves from a stale cache.
+      devOptions: {
+        enabled: process.env.SW_DEV === "1",
+        type: "module",
+        navigateFallback: "index.html",
       },
     }),
   ],

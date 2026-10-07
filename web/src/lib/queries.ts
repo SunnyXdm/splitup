@@ -20,6 +20,7 @@ import {
   withoutExpenses,
 } from './optimistic';
 import { clearPendingInvite } from './pending-invite';
+import { unsubscribeOnSignOut } from './push';
 import type {
   Expense,
   ExpenseInput,
@@ -86,7 +87,12 @@ export function useSignOut() {
     // Mark the explicit sign-out BEFORE the request: from here on, a 401 must
     // not trigger the automatic token re-exchange that would sign us back in.
     onMutate: () => markSignedOut(),
-    mutationFn: () => api<void>('/api/auth/session', { method: 'DELETE' }),
+    mutationFn: async () => {
+      // While the session still exists: stop this device getting the account's
+      // push notifications (best effort, time-bounded — never blocks sign-out).
+      await unsubscribeOnSignOut();
+      await api<void>('/api/auth/session', { method: 'DELETE' });
+    },
     // Wipe everything on sign-out — and delete the IndexedDB copy DIRECTLY.
     // qc.clear() alone only schedules a throttled persister write that the
     // post-sign-out navigation kills, leaving the user's data on disk for the
