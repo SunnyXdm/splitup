@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { BellRing, CircleHelp, Plus, ReceiptText, UserRound } from 'lucide-react';
+import { ArchiveRestore, BellRing, CircleHelp, Plus, ReceiptText, UserRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -15,6 +15,7 @@ import { MoneyText } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import { DraftsChip } from '@/components/expense/DraftsSheet';
 import ExpenseForm from '@/components/expense/ExpenseForm';
+import RecentlyDeletedSheet from '@/components/expense/RecentlyDeletedSheet';
 import SettleUpSheet from '@/components/expense/SettleUpSheet';
 import ExplainBalanceSheet from '@/components/common/ExplainBalanceSheet';
 import { formatMoney } from '@/lib/money';
@@ -37,6 +38,7 @@ export default function FriendDetail() {
   const [settleOpen, setSettleOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
   const [explainCurrency, setExplainCurrency] = useState<string | null>(null);
+  const [deletedOpen, setDeletedOpen] = useState(false);
 
   // Stable per snapshot, so the filtered history below memoizes properly.
   const shared = useMemo(
@@ -170,7 +172,19 @@ export default function FriendDetail() {
       </header>
 
       <section className="flex flex-col gap-3">
-        <span className="eyebrow">History</span>
+        <div className="flex items-center justify-between gap-2">
+          <span className="eyebrow">History</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="rounded-full text-muted-foreground"
+            disabled={!online}
+            onClick={() => setDeletedOpen(true)}
+          >
+            <ArchiveRestore data-icon="inline-start" aria-hidden="true" />
+            Recently deleted
+          </Button>
+        </div>
         <FilteredHistory
           sync={sync}
           expenses={shared}
@@ -216,6 +230,11 @@ export default function FriendDetail() {
             ? null
             : { kind: 'friend', friendId: friend.id, currency: explainCurrency }
         }
+      />
+      <RecentlyDeletedSheet
+        open={deletedOpen}
+        onOpenChange={setDeletedOpen}
+        scope={{ friendId: friend.id }}
       />
       <SettleUpSheet
         open={settleOpen}

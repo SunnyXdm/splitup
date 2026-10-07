@@ -11,6 +11,7 @@ import {
 } from '../lib/wire';
 import { notifySettlement, notifySettlementUndone } from '../lib/notify-events';
 import { unarchiveAffected } from '../lib/archive';
+import { recordRevision } from '../lib/revisions';
 import {
   areFriends,
   assertDepartedUnchanged,
@@ -254,6 +255,7 @@ app.post('/', async (c) => {
         id,
         paymentSummary(shares, row.groupId, body.currency),
       );
+      recordRevision(id, 'created', me.id, now);
       created.push(expenseWire(id));
     }
     // Both people the cash moved between see the settle-up again.
@@ -313,7 +315,10 @@ app.delete('/:batchId', (c) => {
     const del = db.prepare(
       'UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL',
     );
-    for (const row of rows) del.run(now, now, row.id);
+    for (const row of rows) {
+      del.run(now, now, row.id);
+      recordRevision(row.id, 'deleted', me.id, now);
+    }
     // Undoing reopens debts: whoever is unsettled again gets the group back.
     for (const gid of groupIds) unarchiveAffected(gid, []);
     const amount = formatPaymentAmount(batch.amount_cents, batch.currency);

@@ -30,8 +30,10 @@ import {
 import { clearPendingInvite } from './pending-invite';
 import { unsubscribeOnSignOut } from './push';
 import type {
+  DeletedExpenses,
   Expense,
   ExpenseInput,
+  ExpenseRevisions,
   FriendInvitePreview,
   Group,
   InvitePreview,
@@ -585,5 +587,64 @@ export function useDeleteExpense() {
       }
     },
     onSettled: () => invalidateIfLastWrite(qc),
+  });
+}
+
+/** History lives outside /sync (keeps that payload small); fetched on demand. */
+export const REVISIONS_KEY = 'expense-revisions';
+export const DELETED_KEY = 'deleted-expenses';
+
+export function useExpenseRevisions(expenseId: number, enabled: boolean) {
+  return useQuery({
+    queryKey: [REVISIONS_KEY, expenseId],
+    queryFn: () => api<ExpenseRevisions>(`/api/expenses/${expenseId}/revisions`),
+    enabled,
+    staleTime: 0,
+  });
+}
+
+export type DeletedScope = { groupId: number } | { friendId: number };
+
+export function useDeletedExpenses(scope: DeletedScope, enabled: boolean) {
+  const query = 'groupId' in scope ? `groupId=${scope.groupId}` : `friendId=${scope.friendId}`;
+  return useQuery({
+    queryKey: [DELETED_KEY, query],
+    queryFn: () => api<DeletedExpenses>(`/api/expenses/deleted?${query}`),
+    enabled,
+    staleTime: 0,
+  });
+}
+
+export interface RestoreExpenseVars {
+  id: number;
+  revision: number;
+  /** The updatedAt the client last saw; a mismatch → 409 conflict. */
+  expectedUpdatedAt?: string;
+}
+
+/**
+ * Restore (undelete / revert) is validated server-side against membership,
+ * departed members and settle-ups, so it isn't optimistic: the server row
+ * replaces (or re-adds) the cached one, then the dataset and history refetch.
+ */
+export function useRestoreExpense() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: EXPENSE_WRITE_KEY,
+    mutationFn: ({ id, ...body }: RestoreExpenseVars) =>
+      api<Expense>(`/api/expenses/${id}/restore`, { method: 'POST', body }),
+    onSuccess: (expense) => {
+      patchSync(qc, (sync) =>
+        sync.expenses.some((e) => e.id === expense.id)
+          ? withServerExpense(sync, expense)
+          : withRestoredExpense(sync, expense),
+      );
+    },
+    onSettled: (_data, _err, vars) =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: SYNC_KEY }),
+        qc.invalidateQueries({ queryKey: [REVISIONS_KEY, vars.id] }),
+        qc.invalidateQueries({ queryKey: [DELETED_KEY] }),
+      ]),
   });
 }

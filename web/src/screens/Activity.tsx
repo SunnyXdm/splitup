@@ -1,6 +1,7 @@
 import { format, formatDistanceToNow, isToday, isYesterday } from 'date-fns';
 import { parseDateSafe } from '@/lib/dates';
 import {
+  ArchiveRestore,
   CalendarClock,
   HandCoins,
   HeartHandshake,
@@ -22,6 +23,7 @@ const TYPE_ICON: Record<ActivityType, LucideIcon> = {
   expense_added: ReceiptText,
   expense_updated: PencilLine,
   expense_deleted: Trash2,
+  expense_restored: ArchiveRestore,
   payment_added: HandCoins,
   payment_undone: Undo2,
   group_created: Sparkles,

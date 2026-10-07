@@ -83,6 +83,7 @@ export type ActivityType =
   | 'expense_added'
   | 'expense_updated'
   | 'expense_deleted'
+  | 'expense_restored'
   | 'payment_added'
   | 'payment_undone'
   | 'group_created'
@@ -192,4 +193,48 @@ export interface ReceiptScanResult {
   draft: ReceiptDraft;
   warnings: string[];
   model: string;
+}
+
+/** An expense's user-facing state at one point in its history. */
+export interface ExpenseSnapshot {
+  description: string;
+  amountCents: number;
+  currency: string;
+  /** YYYY-MM-DD */
+  date: string;
+  category: Category;
+  notes: string | null;
+  groupId: number | null;
+  isPayment: boolean;
+  shares: ExpenseShare[];
+}
+
+export type RevisionAction = 'created' | 'updated' | 'deleted' | 'restored';
+
+export interface ExpenseRevision {
+  revision: number;
+  action: RevisionAction;
+  actorId: number;
+  createdAt: string;
+  snapshot: ExpenseSnapshot;
+}
+
+/** GET /api/expenses/:id/revisions — newest first; `users` names everyone it mentions. */
+export interface ExpenseRevisions {
+  revisions: ExpenseRevision[];
+  users: User[];
+}
+
+export interface DeletedExpense extends Expense {
+  deletedAt: string;
+  /** Who deleted it; null when unknown. */
+  deletedBy: number | null;
+  /** Its latest revision — what restoring brings back. */
+  revision: number;
+}
+
+/** GET /api/expenses/deleted — the last 90 days, most recently deleted first. */
+export interface DeletedExpenses {
+  expenses: DeletedExpense[];
+  users: User[];
 }

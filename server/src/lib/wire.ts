@@ -84,6 +84,7 @@ export type ActivityType =
   | 'expense_added'
   | 'expense_updated'
   | 'expense_deleted'
+  | 'expense_restored'
   | 'payment_added'
   | 'payment_undone'
   | 'group_created'

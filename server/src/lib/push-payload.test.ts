@@ -74,6 +74,17 @@ describe('expensePayload', () => {
     assert.equal(expensePayload('deleted', asha, 2, dinner).body, 'Asha deleted “Dinner”');
   });
 
+  it('words restores', () => {
+    assert.equal(
+      expensePayload('restored', asha, 2, dinner).body,
+      'Asha restored “Dinner” — you owe ₹450',
+    );
+    assert.equal(
+      expensePayload('restored', asha, 9, dinner).body,
+      'Asha restored “Dinner” — you’re no longer in it',
+    );
+  });
+
   it('clips long descriptions', () => {
     const long = { ...dinner, description: 'x'.repeat(100) };
     const body = expensePayload('deleted', asha, 2, long).body;

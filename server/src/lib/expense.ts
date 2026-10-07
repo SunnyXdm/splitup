@@ -221,7 +221,7 @@ function expenseContext(groupId: number | null, shareUserIds: number[], actorId:
 }
 
 export function expenseSummary(
-  verb: 'added' | 'updated' | 'deleted',
+  verb: 'added' | 'updated' | 'deleted' | 'restored',
   actor: UserRow,
   description: string,
   groupId: number | null,

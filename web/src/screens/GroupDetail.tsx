@@ -56,6 +56,7 @@ import { UserAvatar } from '@/components/common/UserAvatar';
 import ExplainBalanceSheet, { type ExplainTarget } from '@/components/common/ExplainBalanceSheet';
 import { DraftsChip } from '@/components/expense/DraftsSheet';
 import ExpenseForm from '@/components/expense/ExpenseForm';
+import RecentlyDeletedSheet from '@/components/expense/RecentlyDeletedSheet';
 import SettleUpSheet, { type SettleDirection } from '@/components/expense/SettleUpSheet';
 import AddMembersSheet from '@/components/group/AddMembersSheet';
 import FilteredHistory from '@/components/search/FilteredHistory';
@@ -110,6 +111,7 @@ export default function GroupDetail() {
   const [settlePrefill, setSettlePrefill] = useState<SettlePrefill>({});
   const [addPeopleOpen, setAddPeopleOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
+  const [deletedOpen, setDeletedOpen] = useState(false);
   const [explainTarget, setExplainTarget] = useState<ExplainTarget | null>(null);
   // In the URL so a reload (or Back from elsewhere) lands on the same tab.
   const [tab, setTab] = useParamState('tab', TABS, 'expenses');
@@ -291,6 +293,9 @@ export default function GroupDetail() {
                     <Archive aria-hidden="true" /> Archive
                   </>
                 )}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setDeletedOpen(true)} disabled={!online}>
+                <Trash2 aria-hidden="true" /> Recently deleted
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setLeaveOpen(true)}>
@@ -654,6 +659,11 @@ export default function GroupDetail() {
         open={explainOpen}
         onOpenChange={setExplainOpen}
         target={explainTarget}
+      />
+      <RecentlyDeletedSheet
+        open={deletedOpen}
+        onOpenChange={setDeletedOpen}
+        scope={{ groupId: group.id }}
       />
       <AddMembersSheet open={addPeopleOpen} onOpenChange={setAddPeopleOpen} groupId={group.id} />
       <SettleUpSheet

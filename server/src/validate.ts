@@ -132,6 +132,25 @@ export const expensePatchBody = expenseFields
 
 export type ExpenseBody = z.infer<typeof expenseFields>;
 
+/** A stored revision snapshot, re-validated before it may be restored. */
+export const expenseSnapshotSchema = expenseFields.superRefine(refineExpense);
+
+export const expenseRestoreBody = z.strictObject({
+  revision: z.number().int().positive(),
+  /** The updatedAt the client last saw; a mismatch → 409 conflict. */
+  expectedUpdatedAt: z.string().max(40).optional(),
+});
+
+/** GET /api/expenses/deleted scope: one group, one friend, or (neither) everything. */
+export const deletedExpensesQuery = z
+  .strictObject({
+    groupId: z.coerce.number().int().positive().optional(),
+    friendId: z.coerce.number().int().positive().optional(),
+  })
+  .refine((q) => q.groupId === undefined || q.friendId === undefined, {
+    message: 'pass groupId or friendId, not both',
+  });
+
 const settleRow = z.strictObject({
   groupId: z.number().int().positive().nullable(),
   payerId: z.number().int().positive(),

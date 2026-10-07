@@ -435,6 +435,33 @@ const insertShare = db.prepare(
   'INSERT INTO expense_shares (expense_id, user_id, paid_cents, owed_cents) VALUES (?, ?, ?, ?)',
 );
 const softDelete = db.prepare('UPDATE expenses SET deleted_at = ?, updated_at = ? WHERE id = ?');
+// Databases that have expense revision history get a revision per write too
+// (same snapshot shape as server/src/db.ts SNAPSHOT_SQL); older ones don't.
+const hasRevisions =
+  db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'expense_revisions'")
+    .get() !== undefined;
+const insertRevision = hasRevisions
+  ? db.prepare(
+      `INSERT INTO expense_revisions (expense_id, revision, action, actor_id, snapshot, created_at)
+       SELECT e.id,
+         COALESCE((SELECT MAX(r.revision) FROM expense_revisions r WHERE r.expense_id = e.id), 0) + 1,
+         ?, e.created_by,
+         json_object(
+           'description', e.description, 'amountCents', e.amount_cents, 'currency', e.currency,
+           'date', e.date, 'category', e.category, 'notes', e.notes, 'groupId', e.group_id,
+           'isPayment', json(CASE WHEN e.is_payment THEN 'true' ELSE 'false' END),
+           'shares', (
+             SELECT json_group_array(
+               json_object('userId', s.user_id, 'paidCents', s.paid_cents, 'owedCents', s.owed_cents)
+             )
+             FROM (SELECT * FROM expense_shares WHERE expense_id = e.id ORDER BY user_id) s
+           )
+         ),
+         ?
+       FROM expenses e WHERE e.id = ?`,
+    )
+  : null;
 
 // Inside the BEGIN IMMEDIATE opened at startup.
 for (const { originals, replacements } of plan) {
@@ -450,11 +477,16 @@ for (const { originals, replacements } of plan) {
       r.createdAt,
       now,
     );
+    const id = Number(info.lastInsertRowid);
     for (const s of r.shares) {
-      insertShare.run(Number(info.lastInsertRowid), s.userId, s.paidCents, s.owedCents);
+      insertShare.run(id, s.userId, s.paidCents, s.owedCents);
     }
+    insertRevision?.run('created', now, id);
   }
-  for (const o of originals) softDelete.run(now, now, o.id);
+  for (const o of originals) {
+    softDelete.run(now, now, o.id);
+    insertRevision?.run('deleted', now, o.id);
+  }
 }
 
 const replaced = plan.reduce((n, p) => n + p.originals.length, 0);
