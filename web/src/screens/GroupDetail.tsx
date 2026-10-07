@@ -52,6 +52,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { MoneyText } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
 import ExplainBalanceSheet, { type ExplainTarget } from '@/components/common/ExplainBalanceSheet';
+import { DraftsChip } from '@/components/expense/DraftsSheet';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import SettleUpSheet, { type SettleDirection } from '@/components/expense/SettleUpSheet';
 import AddMembersSheet from '@/components/group/AddMembersSheet';
@@ -264,6 +265,8 @@ export default function GroupDetail() {
           </DropdownMenu>
         </div>
       </header>
+
+      <DraftsChip scope={{ kind: 'group', groupId: group.id }} className="self-start" />
 
       <Tabs defaultValue="expenses" className="gap-4">
         <TabsList className="w-full rounded-full p-1 group-data-horizontal/tabs:h-11">

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Camera, Plus, Trash2, TriangleAlert, X } from 'lucide-react';
+import { Camera, CloudOff, Plus, Repeat2, Trash2, TriangleAlert, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { CategoryIcon } from '@/components/common/CategoryIcon';
 import { useOnline } from '@/components/layout/OfflineBanner';
@@ -28,9 +28,22 @@ import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { CATEGORIES, CATEGORY_META } from '@/lib/categories';
 import { errorMessage, isConflict, scanErrorMessage, scanReceipt } from '@/lib/api';
-import { createClientKeyTracker } from '@/lib/client-key';
+import { createClientKeyTracker, newClientKey } from '@/lib/client-key';
+import { currentDrafts, removeDraft, saveAutosave, saveDraft, useDrafts } from '@/lib/draft-store';
+import { autosaveScopeKey, createDraft, type Draft, type DraftsState } from '@/lib/drafts';
+import {
+  checkFormValues,
+  emptyFormValues,
+  formValuesFromExpense,
+  participantIdsFor,
+  revalidateFormValues,
+  sameFormValues,
+  userById,
+  type ExpenseFormValues,
+} from '@/lib/expense-form';
 import { downscaleImage, receiptPrefill } from '@/lib/receipt';
-import { formatMoney, isCanonicalAmount, parseAmountToCents } from '@/lib/money';
+import { buildRepeatPrefill } from '@/lib/repeat';
+import { formatMoney, isCanonicalAmount } from '@/lib/money';
 import {
   SYNC_KEY,
   useCreateExpense,
@@ -38,10 +51,10 @@ import {
   useSyncData,
   useUpdateExpense,
 } from '@/lib/queries';
-import type { Category, Expense, ExpenseInput, ExpenseShare, SyncData, User } from '@/lib/types';
-import { centsToInput, currencySymbol, todayISO } from './money-input';
-import { PayerPicker, defaultPayerState, payerStateFromShares, resolvePaid, type PayerState } from './PayerPicker';
-import { SplitEditor, defaultSplitState, resolveSplit, splitStateFromShares, type SplitState } from './SplitEditor';
+import type { Category, Expense, SyncData, User } from '@/lib/types';
+import { centsToInput, currencySymbol } from './money-input';
+import { PayerPicker, defaultPayerState } from './PayerPicker';
+import { SplitEditor, defaultSplitState } from './SplitEditor';
 
 export interface ExpenseFormProps {
   open: boolean;
@@ -52,6 +65,8 @@ export interface ExpenseFormProps {
   expense?: Expense;
   /** Preselect this friend for non-group expenses. */
   friendId?: number;
+  /** Present = review a saved draft (its own scope wins over groupId/friendId). */
+  draftId?: string;
 }
 
 export default function ExpenseForm({
@@ -60,6 +75,7 @@ export default function ExpenseForm({
   groupId,
   expense,
   friendId,
+  draftId,
 }: ExpenseFormProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -67,12 +83,14 @@ export default function ExpenseForm({
         side="bottom"
         className="mx-auto max-h-[92dvh] w-full max-w-xl rounded-t-[28px]"
       >
-        {/* Mounted only while the sheet is open, so state resets between uses. */}
+        {/* Mounted only while the sheet is open, so state resets between uses
+            (in-progress new expenses survive via the draft autosave). */}
         <FormBody
           onOpenChange={onOpenChange}
           groupId={groupId}
           expense={expense}
           friendId={friendId}
+          draftId={draftId}
         />
       </SheetContent>
     </Sheet>
@@ -86,47 +104,189 @@ interface ScanReview {
   remark: string | null;
 }
 
-function userById(sync: SyncData, id: number): User {
-  return sync.users.find((u) => u.id === id) ?? { id, name: 'Someone', email: null, picture: null };
-}
+type FormMode =
+  | { kind: 'new' }
+  | { kind: 'edit'; expense: Expense }
+  | { kind: 'repeat'; expense: Expense }
+  | { kind: 'draft'; draftId: string };
+
+const TITLES: Record<FormMode['kind'], string> = {
+  new: 'Add expense',
+  edit: 'Edit expense',
+  repeat: 'Repeat expense',
+  draft: 'Review draft',
+};
 
 function FormBody({
   onOpenChange,
   groupId,
   expense,
   friendId,
+  draftId,
 }: Omit<ExpenseFormProps, 'open'>) {
   const { data: sync } = useSyncData();
-  const isEdit = expense !== undefined;
+  const drafts = useDrafts(sync?.me.id);
+  // "Repeat" turns this sheet from editing an expense into adding a copy of it.
+  const [repeatOf, setRepeatOf] = useState<Expense | null>(null);
+  const mode: FormMode = repeatOf
+    ? { kind: 'repeat', expense: repeatOf }
+    : draftId !== undefined
+      ? { kind: 'draft', draftId }
+      : expense
+        ? { kind: 'edit', expense }
+        : { kind: 'new' };
   return (
     <>
-      <SheetHeader className="pb-0">
-        <SheetTitle className="text-xl">{isEdit ? 'Edit expense' : 'Add expense'}</SheetTitle>
+      <SheetHeader className="flex-row items-center gap-2 pr-14 pb-0">
+        <SheetTitle className="text-xl">{TITLES[mode.kind]}</SheetTitle>
+        {mode.kind === 'edit' && !mode.expense.isPayment ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="ml-auto rounded-full"
+            aria-label="Repeat this expense — add a copy dated today"
+            onClick={() => setRepeatOf(mode.expense)}
+          >
+            <Repeat2 data-icon="inline-start" aria-hidden="true" />
+            Repeat
+          </Button>
+        ) : null}
       </SheetHeader>
-      {sync ? (
-        <FormFields
-          sync={sync}
-          onOpenChange={onOpenChange}
-          groupId={groupId}
-          expense={expense}
-          friendId={friendId}
-        />
-      ) : (
+      {!sync ? (
         <FieldDescription className="px-4 pb-6">
           Your data hasn't loaded yet — try again in a moment.
         </FieldDescription>
+      ) : !drafts ? (
+        <div className="flex justify-center px-4 pb-8">
+          <Spinner className="size-6 text-muted-foreground" />
+        </div>
+      ) : (
+        <FormFields
+          key={mode.kind}
+          sync={sync}
+          drafts={drafts}
+          mode={mode}
+          onOpenChange={onOpenChange}
+          groupId={groupId}
+          friendId={friendId}
+        />
       )}
     </>
   );
 }
 
+interface InitialForm {
+  values: ExpenseFormValues;
+  /** The scope's blank form (new/repeat): autosaving it clears the slot. */
+  blank: ExpenseFormValues | null;
+  /** Autosave slot (new/repeat only). */
+  scopeKey: string | null;
+  /** Revalidation notes ("Removed Asha — no longer in this group"). */
+  notes: string[];
+  /** An autosaved in-progress form was restored. */
+  restored: boolean;
+  /** The values can't be used at all. */
+  blocking: string | null;
+  draft: Draft | null;
+  /** Edit mode: departed members' shares stay in play. */
+  participantIds: number[] | null;
+}
+
+function initialForm(
+  mode: FormMode,
+  sync: SyncData,
+  drafts: DraftsState,
+  groupId: number | null,
+  friendId: number | undefined,
+): InitialForm {
+  const meId = sync.me.id;
+  const base = {
+    blank: null,
+    scopeKey: null,
+    notes: [],
+    restored: false,
+    blocking: null,
+    draft: null,
+    participantIds: null,
+  };
+  switch (mode.kind) {
+    case 'edit': {
+      const { expense } = mode;
+      const group = sync.groups.find((g) => g.id === expense.groupId);
+      // Editing keeps departed members' shares in play (union with the current
+      // roster) — silently dropping them would redistribute their portion.
+      const participantIds = group
+        ? [...new Set([...group.memberIds, ...expense.shares.map((s) => s.userId)])]
+        : [meId, ...expense.shares.map((s) => s.userId).filter((id) => id !== meId).slice(0, 1)];
+      return {
+        ...base,
+        values: formValuesFromExpense(expense, meId, participantIds),
+        participantIds,
+      };
+    }
+    case 'repeat': {
+      const { expense } = mode;
+      const rv = buildRepeatPrefill(expense, sync);
+      const scope = {
+        groupId: expense.groupId,
+        friendId:
+          expense.groupId === null
+            ? (expense.shares.find((s) => s.userId !== meId)?.userId ?? null)
+            : null,
+      };
+      return {
+        ...base,
+        values: rv.values,
+        blank: emptyFormValues(sync, scope),
+        scopeKey: autosaveScopeKey(scope),
+        notes: rv.notes,
+        blocking: rv.blocking,
+      };
+    }
+    case 'draft': {
+      const draft = drafts.drafts.find((d) => d.id === mode.draftId) ?? null;
+      if (!draft) {
+        return {
+          ...base,
+          values: emptyFormValues(sync, { groupId: null }),
+          blocking: 'This draft was already added or discarded.',
+        };
+      }
+      const rv = revalidateFormValues(draft.values, sync, draft.names);
+      return { ...base, values: rv.values, notes: rv.notes, blocking: rv.blocking, draft };
+    }
+    case 'new': {
+      const scope = { groupId, friendId };
+      const blank = emptyFormValues(sync, scope);
+      const scopeKey = autosaveScopeKey(scope);
+      const saved = drafts.autosaves[scopeKey];
+      if (saved && !sameFormValues(saved.values, blank)) {
+        const rv = revalidateFormValues(saved.values, sync);
+        if (!rv.blocking) {
+          return { ...base, values: rv.values, blank, scopeKey, notes: rv.notes, restored: true };
+        }
+      }
+      return { ...base, values: blank, blank, scopeKey };
+    }
+  }
+}
+
 function FormFields({
   sync,
+  drafts,
+  mode,
   onOpenChange,
-  groupId,
-  expense,
+  groupId: groupIdProp,
   friendId,
-}: Omit<ExpenseFormProps, 'open'> & { sync: SyncData }) {
+}: {
+  sync: SyncData;
+  drafts: DraftsState;
+  mode: FormMode;
+  onOpenChange: (open: boolean) => void;
+  groupId: number | null;
+  friendId?: number;
+}) {
   const qc = useQueryClient();
   const online = useOnline();
   const keyFor = useRef(createClientKeyTracker()).current;
@@ -135,51 +295,64 @@ function FormFields({
   const deleteExpense = useDeleteExpense();
 
   const me = sync.me;
-  const group = groupId !== null ? (sync.groups.find((g) => g.id === groupId) ?? null) : null;
+  const [init] = useState(() => initialForm(mode, sync, drafts, groupIdProp, friendId));
+  const [values, setValues] = useState<ExpenseFormValues>(init.values);
+  const [notices, setNotices] = useState(init.notes);
+  const [restored, setRestored] = useState(init.restored);
+  const set = <K extends keyof ExpenseFormValues>(key: K, value: ExpenseFormValues[K]) =>
+    setValues((prev) => ({ ...prev, [key]: value }));
+
+  const expense = mode.kind === 'edit' ? mode.expense : undefined;
   const isEdit = expense !== undefined;
+  const { groupId, currency } = values;
+  const group = groupId !== null ? (sync.groups.find((g) => g.id === groupId) ?? null) : null;
 
-  const initialFriendId = (() => {
-    if (groupId !== null) return null;
-    if (expense) return expense.shares.find((s) => s.userId !== me.id)?.userId ?? null;
-    if (friendId !== undefined) return friendId;
-    return sync.friendIds[0] ?? null;
-  })();
-  // Editing keeps departed members' shares in play (union with the current
-  // roster) — silently dropping them would redistribute their portion.
-  const initialParticipantIds = group
-    ? expense
-      ? [...new Set([...group.memberIds, ...expense.shares.map((s) => s.userId)])]
-      : group.memberIds
-    : initialFriendId !== null
-      ? [me.id, initialFriendId]
-      : [me.id];
-
-  const [activeFriendId, setActiveFriendId] = useState<number | null>(initialFriendId);
-  const [description, setDescription] = useState(expense?.description ?? '');
-  const [amountRaw, setAmountRaw] = useState(
-    expense ? centsToInput(expense.amountCents, expense.currency) : '',
-  );
-  const [currency, setCurrency] = useState(
-    expense?.currency ?? group?.currency ?? me.defaultCurrency,
-  );
-  const [date, setDate] = useState(expense?.date ?? todayISO());
-  const [category, setCategory] = useState<Category>(expense?.category ?? 'general');
-  const [notes, setNotes] = useState(expense?.notes ?? '');
-  const [showNotes, setShowNotes] = useState(Boolean(expense?.notes));
-  const [payer, setPayer] = useState<PayerState>(() =>
-    expense ? payerStateFromShares(expense.shares, me.id, expense.currency) : defaultPayerState(me.id),
-  );
-  const [split, setSplit] = useState<SplitState>(() =>
-    expense
-      ? splitStateFromShares(expense.shares, initialParticipantIds, expense.currency)
-      : defaultSplitState(initialParticipantIds),
-  );
   const [attempted, setAttempted] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
+  // --- Autosave: the in-progress form (or the draft under review) is written
+  // to this device, debounced, and once more when the sheet closes. Nothing is
+  // written until the user changes something; never after it was saved.
+  const dirty = useRef(false);
+  const finished = useRef(false);
+  const persist = useEffectEvent(() => {
+    if (finished.current || !dirty.current || init.blocking) return;
+    if (mode.kind === 'draft') {
+      const current = currentDrafts(me.id).find((d) => d.id === init.draft?.id);
+      if (current) saveDraft(me.id, { ...current, values, updatedAt: new Date().toISOString() });
+    } else if (init.scopeKey !== null && init.blank !== null) {
+      saveAutosave(me.id, init.scopeKey, sameFormValues(values, init.blank) ? null : values);
+    }
+  });
+  useEffect(() => {
+    if (mode.kind === 'edit') return;
+    if (!dirty.current && sameFormValues(values, init.values)) return;
+    dirty.current = true;
+    const t = setTimeout(() => persist(), 400);
+    return () => clearTimeout(t);
+  }, [values, init.values, mode.kind]);
+  useEffect(() => () => persist(), []);
+
+  /** Saved for good: stop autosaving and clear this form's slot. */
+  const finish = () => {
+    finished.current = true;
+    if (init.scopeKey !== null && mode.kind !== 'draft') saveAutosave(me.id, init.scopeKey, null);
+  };
+
+  const discardRestored = () => {
+    if (!init.blank) return;
+    dirty.current = true;
+    setValues(init.blank);
+    setRestored(false);
+    setNotices([]);
+    setAttempted(false);
+    if (init.scopeKey !== null) saveAutosave(me.id, init.scopeKey, null);
+  };
+
   // Receipt scanning (new expenses only). The scan only prefills fields — the
   // user still picks payer/split and has to press Save.
-  const canScan = !isEdit && sync.features?.receiptScan === true;
+  const canScan = mode.kind === 'new' && sync.features?.receiptScan === true;
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scanAbort = useRef<AbortController | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -206,15 +379,17 @@ function FormFields({
       if (ctrl.signal.aborted) return;
       const p = receiptPrefill(draft, currency, group === null);
       const formCurrency = p.currency ?? currency;
-      if (p.description) setDescription(p.description);
-      if (p.currency) setCurrency(p.currency);
-      if (p.amountCents !== null) setAmountRaw(centsToInput(p.amountCents, formCurrency));
-      if (p.date) setDate(p.date);
-      setCategory(p.category);
-      if (p.notes) {
-        setNotes(p.notes);
-        setShowNotes(true);
-      }
+      setValues((prev) => ({
+        ...prev,
+        ...(p.description ? { description: p.description } : {}),
+        ...(p.currency ? { currency: p.currency } : {}),
+        ...(p.amountCents !== null
+          ? { amountRaw: centsToInput(p.amountCents, formCurrency) }
+          : {}),
+        ...(p.date ? { date: p.date } : {}),
+        category: p.category,
+        ...(p.notes ? { notes: p.notes, showNotes: true } : {}),
+      }));
       setScanReview({
         warnings: [...(p.currencyNotice ? [p.currencyNotice] : []), ...warnings],
         confidence: draft.confidence,
@@ -237,101 +412,72 @@ function FormFields({
     setScanning(false);
   };
 
-  const participants: User[] = useMemo(() => {
-    if (group) {
-      const ids = expense
-        ? [...new Set([...group.memberIds, ...expense.shares.map((s) => s.userId)])]
-        : group.memberIds;
-      return ids.map((id) => userById(sync, id));
-    }
-    const ids = activeFriendId !== null ? [me.id, activeFriendId] : [me.id];
-    return ids.map((id) => userById(sync, id));
-  }, [sync, group, expense, me.id, activeFriendId]);
+  const participantIds = init.participantIds ?? participantIdsFor(values, sync);
+  const participantKey = participantIds.join(',');
+  const participants: User[] = useMemo(
+    () => participantKey.split(',').filter(Boolean).map((id) => userById(sync, Number(id))),
+    [sync, participantKey],
+  );
 
   const friendOptions: User[] = useMemo(() => {
     const ids = new Set<number>(sync.friendIds);
-    if (activeFriendId !== null) ids.add(activeFriendId);
+    if (values.friendId !== null) ids.add(values.friendId);
     return [...ids].map((id) => userById(sync, id));
-  }, [sync, activeFriendId]);
+  }, [sync, values.friendId]);
 
   // Changing the counterparty resets who-paid and the split to sane defaults.
   const changeFriend = (id: number) => {
-    setActiveFriendId(id);
-    setPayer(defaultPayerState(me.id));
-    setSplit(defaultSplitState([me.id, id]));
+    setValues((prev) => ({
+      ...prev,
+      friendId: id,
+      payer: defaultPayerState(me.id),
+      split: defaultSplitState([me.id, id]),
+    }));
   };
 
-  const amountCents = parseAmountToCents(amountRaw, currency);
-  const paidRes =
-    amountCents !== null ? resolvePaid(payer, participants, amountCents, currency) : null;
-  const splitRes =
-    amountCents !== null ? resolveSplit(split, participants, amountCents, currency) : null;
-
-  const descriptionError = description.trim() === '' ? 'Add a description.' : null;
-  const amountError = amountCents === null ? 'Enter a valid amount.' : null;
-  const dateError = date === '' ? 'Pick a date.' : null;
-  const friendError =
-    groupId === null && activeFriendId === null
-      ? 'Add a friend first — expenses outside a group are shared with a friend.'
-      : null;
-
-  const buildInput = (): ExpenseInput | null => {
-    if (
-      descriptionError ||
-      amountError ||
-      dateError ||
-      friendError ||
-      amountCents === null ||
-      !paidRes?.paid ||
-      !splitRes?.owed
-    ) {
-      return null;
-    }
-    const paidMap = new Map(paidRes.paid.map((p) => [p.userId, p.paidCents]));
-    const owedMap = new Map(splitRes.owed.map((o) => [o.userId, o.owedCents]));
-    let shares: ExpenseShare[];
-    if (groupId === null && activeFriendId !== null) {
-      // Non-group: exactly [me, friend], even if one side is all zeros.
-      shares = [me.id, activeFriendId].map((userId) => ({
-        userId,
-        paidCents: paidMap.get(userId) ?? 0,
-        owedCents: owedMap.get(userId) ?? 0,
-      }));
-    } else {
-      const ids = [...new Set([...paidMap.keys(), ...owedMap.keys()])].sort((a, b) => a - b);
-      shares = ids
-        .map((userId) => ({
-          userId,
-          paidCents: paidMap.get(userId) ?? 0,
-          owedCents: owedMap.get(userId) ?? 0,
-        }))
-        .filter((s) => s.paidCents > 0 || s.owedCents > 0);
-    }
-    return {
-      groupId,
-      description: description.trim(),
-      amountCents,
-      currency,
-      date,
-      category,
-      notes: showNotes && notes.trim() !== '' ? notes.trim() : null,
-      isPayment: false,
-      shares,
-    };
-  };
+  const check = checkFormValues(values, participants, me.id);
+  const { amountCents } = check;
+  const descriptionError = check.errors.description;
+  const amountError = check.errors.amount;
+  const dateError = check.errors.date;
+  const friendError = check.errors.friend;
 
   const saving = createExpense.isPending || updateExpense.isPending;
+  const draft = init.draft;
+  /** Offline, a new expense (or a draft under review) is kept as a draft. */
+  const savesAsDraft = !online && mode.kind !== 'edit';
 
   const handleSave = () => {
     setAttempted(true);
-    const input = buildInput();
+    const input = check.input;
     if (!input) return;
+    if (savesAsDraft) {
+      if (draft) {
+        const current = currentDrafts(me.id).find((d) => d.id === draft.id) ?? draft;
+        saveDraft(me.id, { ...current, values, updatedAt: new Date().toISOString() });
+        finish();
+        toast('Draft updated');
+      } else {
+        // The idempotency key is minted NOW and travels with the draft, so
+        // however often it is submitted later it can only be recorded once.
+        saveDraft(me.id, createDraft(values, sync, { id: newClientKey(), clientKey: newClientKey() }));
+        finish();
+        toast('Draft saved', {
+          description: 'You can add it once you’re back online.',
+        });
+      }
+      onOpenChange(false);
+      return;
+    }
     const callbacks = {
       onSuccess: () => {
+        if (draft) removeDraft(me.id, draft.id);
         toast(isEdit ? 'Expense updated' : 'Expense added');
         onOpenChange(false);
       },
       onError: (err: Error) => {
+        // Not saved after all: keep autosaving what's on screen.
+        finished.current = false;
         toast.error(errorMessage(err));
         if (isConflict(err)) {
           // Our copy is outdated: close and pull the latest so a reopen
@@ -349,8 +495,20 @@ function FormFields({
         callbacks,
       );
     } else {
-      createExpense.mutate({ ...input, clientKey: keyFor(input) }, callbacks);
+      finish();
+      createExpense.mutate(
+        { ...input, clientKey: draft ? draft.clientKey : keyFor(input) },
+        callbacks,
+      );
     }
+  };
+
+  const discardDraft = () => {
+    if (!draft) return;
+    finished.current = true;
+    removeDraft(me.id, draft.id);
+    toast('Draft discarded');
+    onOpenChange(false);
   };
 
   const handleDelete = () => {
@@ -365,6 +523,20 @@ function FormFields({
     });
   };
 
+  if (init.blocking) {
+    return (
+      <div className="flex flex-col gap-4 px-4 pb-[calc(env(safe-area-inset-bottom)+1.5rem)]">
+        <FieldDescription>{init.blocking}</FieldDescription>
+        {draft ? (
+          <Button variant="outline" className="h-12 w-full rounded-full" onClick={discardDraft}>
+            <Trash2 data-icon="inline-start" />
+            Discard draft
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
+
   if (groupId !== null && !group) {
     return (
       <FieldDescription className="px-4 pb-6">
@@ -377,6 +549,21 @@ function FormFields({
     <>
       <div className="min-h-0 flex-1 overflow-y-auto px-4">
         <FieldGroup className="pb-2">
+          {restored || notices.length > 0 || mode.kind === 'repeat' ? (
+            <FormNotice
+              title={
+                restored
+                  ? 'Draft restored'
+                  : mode.kind === 'repeat'
+                    ? 'Repeating with today’s date'
+                    : notices.length > 0
+                      ? 'Some things changed since this draft'
+                      : null
+              }
+              notes={notices}
+              onDiscard={restored ? discardRestored : undefined}
+            />
+          ) : null}
           {canScan ? (
             <>
               <input
@@ -421,8 +608,8 @@ function FormFields({
             <FieldLabel htmlFor="expense-description">Description</FieldLabel>
             <Input
               id="expense-description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              value={values.description}
+              onChange={(e) => set('description', e.target.value)}
               maxLength={200}
               placeholder="Dinner, taxi, rent…"
               className="h-11 rounded-full px-4"
@@ -446,7 +633,7 @@ function FormFields({
                     aria-label="Currency"
                     className="h-8 w-auto border-0 px-2.5 font-medium"
                     value={currency}
-                    onValueChange={setCurrency}
+                    onValueChange={(v) => set('currency', v)}
                     options={currencyPickerOptions()}
                   />
                 </InputGroupAddon>
@@ -455,8 +642,8 @@ function FormFields({
                 id="expense-amount"
                 inputMode="decimal"
                 placeholder={centsToInput(0, currency)}
-                value={amountRaw}
-                onChange={(e) => setAmountRaw(e.target.value)}
+                value={values.amountRaw}
+                onChange={(e) => set('amountRaw', e.target.value)}
               />
               {group ? (
                 <InputGroupAddon align="inline-end" className="pr-3.5">
@@ -466,7 +653,7 @@ function FormFields({
             </InputGroup>
             {attempted && amountError ? (
               <FieldDescription className="text-destructive">{amountError}</FieldDescription>
-            ) : amountCents !== null && !isCanonicalAmount(amountRaw) ? (
+            ) : amountCents !== null && !isCanonicalAmount(values.amountRaw) ? (
               // Anything but a plain "12.50" (math, "12,50", grouping) shows
               // how it was read, so a misparse can't slip through unseen.
               <FieldDescription>= {formatMoney(amountCents, currency)}</FieldDescription>
@@ -485,7 +672,7 @@ function FormFields({
                   id="expense-friend"
                   title="Split with"
                   placeholder="Choose a friend"
-                  value={activeFriendId !== null ? String(activeFriendId) : null}
+                  value={values.friendId !== null ? String(values.friendId) : null}
                   onValueChange={(v) => changeFriend(Number(v))}
                   options={friendOptions.map((f) => ({
                     value: String(f.id),
@@ -502,8 +689,8 @@ function FormFields({
             <Input
               id="expense-date"
               type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
+              value={values.date}
+              onChange={(e) => set('date', e.target.value)}
               className="h-11 rounded-full px-4"
             />
             {attempted && dateError ? (
@@ -514,9 +701,9 @@ function FormFields({
           <Field>
             <FieldLabel>Category</FieldLabel>
             <ToggleGroup
-              value={[category]}
+              value={[values.category]}
               onValueChange={(v) => {
-                if (v[0]) setCategory(v[0] as Category);
+                if (v[0]) set('category', v[0] as Category);
               }}
               className="-mx-4 w-auto justify-start overflow-x-auto px-4 pb-1"
               aria-label="Category"
@@ -535,13 +722,13 @@ function FormFields({
             </ToggleGroup>
           </Field>
 
-          {showNotes ? (
+          {values.showNotes ? (
             <Field>
               <FieldLabel htmlFor="expense-notes">Notes</FieldLabel>
               <Textarea
                 id="expense-notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
+                value={values.notes}
+                onChange={(e) => set('notes', e.target.value)}
                 maxLength={1000}
                 placeholder="Anything worth remembering"
                 className="rounded-[20px] px-4"
@@ -553,7 +740,7 @@ function FormFields({
               variant="ghost"
               size="sm"
               className="self-start rounded-full"
-              onClick={() => setShowNotes(true)}
+              onClick={() => set('showNotes', true)}
             >
               <Plus data-icon="inline-start" />
               Add note
@@ -565,8 +752,8 @@ function FormFields({
             meId={me.id}
             amountCents={amountCents}
             currency={currency}
-            value={payer}
-            onChange={setPayer}
+            value={values.payer}
+            onChange={(p) => set('payer', p)}
           />
 
           <SplitEditor
@@ -574,26 +761,45 @@ function FormFields({
             meId={me.id}
             amountCents={amountCents}
             currency={currency}
-            value={split}
-            onChange={setSplit}
+            value={values.split}
+            onChange={(sp) => set('split', sp)}
           />
         </FieldGroup>
       </div>
 
       <SheetFooter className="pt-2 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
         {!online ? (
-          <FieldDescription className="text-center">
-            You're offline — viewing only.
+          <FieldDescription className="flex items-center justify-center gap-1.5 text-center">
+            <CloudOff className="size-3.5 shrink-0" aria-hidden="true" />
+            {isEdit
+              ? 'You’re offline — viewing only.'
+              : 'You’re offline — save a draft and add it when you’re back online.'}
           </FieldDescription>
         ) : null}
         <Button
           className="h-12 w-full rounded-full"
-          disabled={!online || saving}
+          disabled={(isEdit && !online) || saving}
           onClick={handleSave}
         >
           {saving ? <Spinner data-icon="inline-start" /> : null}
-          {isEdit ? 'Save changes' : 'Save'}
+          {isEdit
+            ? 'Save changes'
+            : savesAsDraft
+              ? 'Save draft'
+              : draft
+                ? 'Add expense'
+                : 'Save'}
         </Button>
+        {draft ? (
+          <Button
+            variant="ghost"
+            className="h-12 w-full rounded-full text-muted-foreground"
+            onClick={discardDraft}
+          >
+            <Trash2 data-icon="inline-start" />
+            Discard draft
+          </Button>
+        ) : null}
         {expense ? (
           <>
             <Button
@@ -722,6 +928,54 @@ function ScanReviewBanner({
           Scan again
         </Button>
       </p>
+    </div>
+  );
+}
+
+/** "Draft restored · Discard" / repeat + revalidation notes at the top of the form. */
+function FormNotice({
+  title,
+  notes,
+  onDiscard,
+}: {
+  title: string | null;
+  notes: string[];
+  onDiscard?: () => void;
+}) {
+  const warn = notes.length > 0;
+  return (
+    <div
+      role="status"
+      className={
+        warn
+          ? 'flex flex-col gap-1.5 rounded-[20px] border border-signal/40 bg-signal/10 px-4 py-3 text-sm'
+          : 'flex flex-col gap-1.5 rounded-[20px] bg-secondary px-4 py-3 text-sm'
+      }
+    >
+      <div className="flex min-h-7 items-center gap-2">
+        {warn ? (
+          <TriangleAlert className="size-4 shrink-0 text-signal" aria-hidden="true" />
+        ) : null}
+        <p className="flex-1 font-medium">{title}</p>
+        {onDiscard ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="-my-1 -mr-2 rounded-full"
+            onClick={onDiscard}
+          >
+            Discard
+          </Button>
+        ) : null}
+      </div>
+      {warn ? (
+        <ul className="flex list-disc flex-col gap-0.5 pl-5 text-muted-foreground">
+          {notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

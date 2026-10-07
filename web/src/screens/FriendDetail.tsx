@@ -13,6 +13,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { MoneyText } from '@/components/common/MoneyText';
 import { UserAvatar } from '@/components/common/UserAvatar';
+import { DraftsChip } from '@/components/expense/DraftsSheet';
 import ExpenseForm from '@/components/expense/ExpenseForm';
 import SettleUpSheet from '@/components/expense/SettleUpSheet';
 import ExplainBalanceSheet from '@/components/common/ExplainBalanceSheet';
@@ -116,9 +117,9 @@ export default function FriendDetail() {
           )}
         </div>
         <div className="flex flex-wrap gap-2">
+          {/* Works offline too: the expense is kept as a draft. */}
           <Button
             className="h-11 rounded-full px-5"
-            disabled={!online}
             onClick={() => {
               setEditingExpense(undefined);
               setExpenseOpen(true);
@@ -157,6 +158,7 @@ export default function FriendDetail() {
             </Button>
           ) : null}
         </div>
+        <DraftsChip scope={{ kind: 'friend', friendId: friend.id }} className="self-start" />
       </header>
 
       <section className="flex flex-col gap-3">

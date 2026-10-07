@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 import { MoneyText } from '@/components/common/MoneyText';
+import { DraftsChip } from '@/components/expense/DraftsSheet';
 import { GROUP_EMOJI } from '@/components/group/group-emoji';
 import GroupFormFields, { type GroupFormValues } from '@/components/group/GroupFormFields';
 import { useOnline } from '@/components/layout/OfflineBanner';
@@ -48,6 +49,7 @@ export default function Home() {
   return (
     <div className="flex flex-col gap-8 pb-6">
       <BalanceHero totals={totals} gross={gross} />
+      <DraftsChip scope={{ kind: 'all' }} className="self-start" />
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <span className="eyebrow">Groups</span>
