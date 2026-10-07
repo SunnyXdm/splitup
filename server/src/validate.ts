@@ -70,6 +70,11 @@ export const memberBody = z.strictObject({
   userId: z.number().int().positive(),
 });
 
+/** A guest participant's display name. */
+export const guestBody = z.strictObject({
+  name: z.string().trim().min(1).max(60),
+});
+
 export const friendBody = z.strictObject({
   email: z.string().trim().toLowerCase().regex(emailRe).max(254),
 });

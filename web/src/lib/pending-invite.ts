@@ -7,7 +7,7 @@
  */
 const KEY = 'splitup-pending-invite';
 
-export type InviteKind = 'friend' | 'join';
+export type InviteKind = 'friend' | 'join' | 'claim';
 
 export interface PendingInvite {
   kind: InviteKind;
@@ -15,7 +15,7 @@ export interface PendingInvite {
   capturedAt: number;
 }
 
-const INVITE_PATH = /^\/(friend|join)\/([0-9a-f]{16,64})$/;
+const INVITE_PATH = /^\/(friend|join|claim)\/([0-9a-f]{16,64})$/;
 
 /**
  * Markers are short-lived: long enough to survive the OAuth round-trip, short
@@ -44,7 +44,7 @@ export function readPendingInvite(): PendingInvite | null {
     if (!raw) return null;
     const value = JSON.parse(raw) as PendingInvite;
     if (
-      (value.kind === 'friend' || value.kind === 'join') &&
+      (value.kind === 'friend' || value.kind === 'join' || value.kind === 'claim') &&
       /^[0-9a-f]{16,64}$/.test(value.token) &&
       typeof value.capturedAt === 'number' &&
       Date.now() - value.capturedAt < MAX_AGE_MS

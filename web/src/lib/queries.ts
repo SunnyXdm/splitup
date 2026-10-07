@@ -38,6 +38,7 @@ import type {
   ExpenseRevisions,
   FriendInvitePreview,
   Group,
+  GuestClaimPreview,
   InvitePreview,
   Me,
   PendingOccurrence,
@@ -255,6 +256,45 @@ export function useAddGroupMember() {
   });
 }
 
+export function useAddGuest() {
+  return useMutation({
+    mutationFn: ({ groupId, name }: { groupId: number; name: string }) =>
+      api<{ user: User; group: Group }>(`/api/groups/${groupId}/guests`, {
+        method: 'POST',
+        body: { name },
+      }),
+    ...useSyncInvalidation(),
+  });
+}
+
+export function useRenameGuest() {
+  return useMutation({
+    mutationFn: ({ groupId, userId, name }: { groupId: number; userId: number; name: string }) =>
+      api<{ user: User }>(`/api/groups/${groupId}/guests/${userId}`, {
+        method: 'PATCH',
+        body: { name },
+      }),
+    ...useSyncInvalidation(),
+  });
+}
+
+export function useRemoveGuest() {
+  return useMutation({
+    mutationFn: ({ groupId, userId }: { groupId: number; userId: number }) =>
+      api<void>(`/api/groups/${groupId}/guests/${userId}`, { method: 'DELETE' }),
+    ...useSyncInvalidation(),
+  });
+}
+
+export function useCreateGuestClaim() {
+  return useMutation({
+    mutationFn: ({ groupId, userId }: { groupId: number; userId: number }) =>
+      api<{ token: string; url: string }>(`/api/groups/${groupId}/guests/${userId}/claim-link`, {
+        method: 'POST',
+      }),
+  });
+}
+
 // Preview queries are relationship-state snapshots — always refetch, never
 // keep them around (a stale preview can contradict server truth).
 const PREVIEW_FRESHNESS = {
@@ -275,6 +315,23 @@ export function useInvitePreview(token: string) {
 export function useJoinInvite() {
   return useMutation({
     mutationFn: (token: string) => api<Group>(`/api/invites/${token}/join`, { method: 'POST' }),
+    ...useSyncInvalidation(),
+  });
+}
+
+export function useGuestClaimPreview(token: string) {
+  return useQuery({
+    queryKey: ['guest-claim', token],
+    queryFn: () => api<GuestClaimPreview>(`/api/guest-claims/${token}`),
+    ...PREVIEW_FRESHNESS,
+  });
+}
+
+/** Takes a guest's shares over; the dataset changes everywhere, so it re-syncs. */
+export function useAcceptGuestClaim() {
+  return useMutation({
+    mutationFn: (token: string) =>
+      api<{ group: Group }>(`/api/guest-claims/${token}/accept`, { method: 'POST' }),
     ...useSyncInvalidation(),
   });
 }

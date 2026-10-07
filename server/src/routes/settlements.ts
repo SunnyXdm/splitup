@@ -19,6 +19,7 @@ import {
   formatPaymentAmount,
   groupNet,
   insertShares,
+  isGuestMember,
   isMember,
   memberGroupOr404,
   paymentSummary,
@@ -120,7 +121,14 @@ app.post('/', async (c) => {
   if (body.counterpartyId === me.id) {
     throw new HTTPException(400, { message: 'you cannot settle with yourself' });
   }
-  if (!areFriends(me.id, body.counterpartyId)) {
+  // Guests are nobody's friend: settling with one is allowed only as payments
+  // inside the group they belong to (no direct rows, no other groups).
+  if (
+    !areFriends(me.id, body.counterpartyId) &&
+    !body.rows.every(
+      (r) => r.groupId !== null && isGuestMember(r.groupId, body.counterpartyId),
+    )
+  ) {
     throw new HTTPException(400, { message: 'you can only settle with a friend' });
   }
   const pair = new Set([me.id, body.counterpartyId]);

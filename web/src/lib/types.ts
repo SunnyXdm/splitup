@@ -15,6 +15,8 @@ export interface User {
   name: string;
   email: string | null;
   picture: string | null;
+  /** A guest participant: no account, tracked by members inside one group. */
+  isGuest?: boolean;
 }
 
 export interface Me extends User {
@@ -90,7 +92,11 @@ export type ActivityType =
   | 'group_renamed'
   | 'member_joined'
   | 'member_removed'
-  | 'friend_added';
+  | 'friend_added'
+  | 'guest_added'
+  | 'guest_renamed'
+  | 'guest_removed'
+  | 'guest_claimed';
 
 export interface ActivityItem {
   id: number;
@@ -201,6 +207,18 @@ export interface FriendInvitePreview {
   inviter: User;
   isSelf: boolean;
   alreadyFriends: boolean;
+}
+
+/** GET /api/guest-claims/:token — what accepting a guest claim link would do. */
+export interface GuestClaimPreview {
+  token: string;
+  guest: User;
+  groupId: number;
+  groupName: string;
+  emoji: string;
+  inviter: User;
+  /** I'm already in the group: the guest's shares get combined with mine. */
+  alreadyMember: boolean;
 }
 
 export interface InvitePreview {

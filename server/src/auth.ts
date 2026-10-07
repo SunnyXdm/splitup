@@ -28,13 +28,26 @@ export async function verifyShooToken(idToken: string): Promise<ShooClaims> {
     audience: `origin:${APP_ORIGIN}`,
     algorithms: ['ES256'],
   });
-  if (typeof payload.pairwise_sub !== 'string' || payload.pairwise_sub.length === 0) {
+  if (
+    typeof payload.pairwise_sub !== 'string' ||
+    payload.pairwise_sub.length === 0 ||
+    isGuestSub(payload.pairwise_sub)
+  ) {
     throw new HTTPException(401, { message: 'invalid token' });
   }
   return payload as ShooClaims;
 }
 
+/** Guest participants' synthetic subject prefix; no shoo login can produce it. */
+export const GUEST_SUB_PREFIX = 'guest:';
+export const isGuestSub = (sub: string) => sub.startsWith(GUEST_SUB_PREFIX);
+
 export function upsertUserFromClaims(claims: ShooClaims): UserRow {
+  // Defense in depth (verifyShooToken already refuses these): a token must
+  // never resolve to a guest row, which would hand out the guest's ledger.
+  if (isGuestSub(claims.pairwise_sub)) {
+    throw new HTTPException(401, { message: 'invalid token' });
+  }
   const existing = db
     .prepare<[string], UserRow>('SELECT * FROM users WHERE shoo_sub = ?')
     .get(claims.pairwise_sub);
@@ -66,7 +79,20 @@ const RENEW_BELOW_MS = 15 * 24 * 60 * 60 * 1000;
 
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
+/** Guests never sign in: refuses to create a session for one (or an unknown id). */
+export function assertCanHaveSession(userId: number): void {
+  const row = db
+    .prepare<[number], { is_guest: number; shoo_sub: string }>(
+      'SELECT is_guest, shoo_sub FROM users WHERE id = ?',
+    )
+    .get(userId);
+  if (!row || row.is_guest !== 0 || isGuestSub(row.shoo_sub)) {
+    throw new HTTPException(403, { message: 'guests cannot sign in' });
+  }
+}
+
 export function createSession(c: Context, userId: number): void {
+  assertCanHaveSession(userId);
   const token = randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)').run(
     hashToken(token),
@@ -118,7 +144,14 @@ export function sessionUser(c: Context): UserRow | null {
       maxAge: SESSION_TTL_MS / 1000,
     });
   }
-  return db.prepare<[number], UserRow>('SELECT * FROM users WHERE id = ?').get(session.user_id) ?? null;
+  const user =
+    db.prepare<[number], UserRow>('SELECT * FROM users WHERE id = ?').get(session.user_id) ?? null;
+  // A session row pointing at a guest can only come from tampering: drop it.
+  if (user && user.is_guest !== 0) {
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    return null;
+  }
+  return user;
 }
 
 /** Cheap indexed check that a cookie token maps to a live session row. */
@@ -152,4 +185,5 @@ export function pruneExpired(): void {
   db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now);
   db.prepare('DELETE FROM group_invites WHERE expires_at < ?').run(now);
   db.prepare('DELETE FROM friend_invites WHERE expires_at < ?').run(now);
+  db.prepare('DELETE FROM guest_claims WHERE expires_at < ?').run(now);
 }

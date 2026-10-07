@@ -24,6 +24,30 @@ export function groupMemberIds(groupId: number): number[] {
     .map((r) => r.user_id);
 }
 
+/** Members who are real accounts (guests excluded) — the people who befriend on join. */
+export function realMemberIds(groupId: number): number[] {
+  return db
+    .prepare<[number], { user_id: number }>(
+      `SELECT gm.user_id FROM group_members gm JOIN users u ON u.id = gm.user_id
+       WHERE gm.group_id = ? AND u.is_guest = 0 ORDER BY gm.joined_at, gm.user_id`,
+    )
+    .all(groupId)
+    .map((r) => r.user_id);
+}
+
+/** A live (unclaimed) guest who is currently a member of this group. */
+export function isGuestMember(groupId: number, userId: number): boolean {
+  return (
+    db
+      .prepare<[number, number], { one: number }>(
+        `SELECT 1 AS one FROM users u
+         JOIN group_members gm ON gm.user_id = u.id AND gm.group_id = u.guest_of_group
+         WHERE u.id = ? AND u.is_guest = 1 AND u.guest_of_group = ? AND u.merged_into IS NULL`,
+      )
+      .get(userId, groupId) !== undefined
+  );
+}
+
 /** The group, but only when it exists AND the caller is a member — 404 otherwise (no existence leak). */
 export function memberGroupOr404(groupId: number, userId: number): GroupRow {
   const group = db

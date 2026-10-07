@@ -303,6 +303,36 @@ CREATE INDEX IF NOT EXISTS idx_recurring_occurrences_pending
   ON recurring_occurrences(rule_id) WHERE status = 'pending';
 `);
 
+// Guest participants: people without Splitup tracked inside one group. They
+// are ordinary users rows (so balances, routing and history need no special
+// cases) that can never sign in — shoo_sub is 'guest:<hex>', which no shoo
+// token can produce, and auth refuses to mint a session for them. A claimed
+// guest keeps its row for history, with merged_into pointing at the account
+// that took over its shares.
+const userCols = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
+if (!userCols.some((c) => c.name === 'is_guest')) {
+  db.exec('ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0');
+}
+if (!userCols.some((c) => c.name === 'guest_of_group')) {
+  db.exec('ALTER TABLE users ADD COLUMN guest_of_group INTEGER');
+}
+if (!userCols.some((c) => c.name === 'created_by')) {
+  db.exec('ALTER TABLE users ADD COLUMN created_by INTEGER');
+}
+if (!userCols.some((c) => c.name === 'merged_into')) {
+  db.exec('ALTER TABLE users ADD COLUMN merged_into INTEGER');
+}
+db.exec(`
+CREATE TABLE IF NOT EXISTS guest_claims (
+  token TEXT PRIMARY KEY,
+  guest_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guest_claims_guest ON guest_claims(guest_id);
+`);
+
 export interface UserRow {
   id: number;
   shoo_sub: string;
@@ -311,6 +341,14 @@ export interface UserRow {
   picture: string | null;
   default_currency: string;
   created_at: string;
+  /** 1 for a guest participant (never signs in). */
+  is_guest: number;
+  /** The one group a guest belongs to; null for real users. */
+  guest_of_group: number | null;
+  /** Who added the guest; null for real users. */
+  created_by: number | null;
+  /** The account a claimed guest was merged into; null otherwise. */
+  merged_into: number | null;
 }
 export interface GroupRow {
   id: number;

@@ -22,6 +22,7 @@ import settlementRoutes from './routes/settlements';
 import pushRoutes from './routes/push';
 import receiptRoutes from './routes/receipts';
 import recurringRoutes from './routes/recurring';
+import guestClaimRoutes from './routes/guest-claims';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT ?? 8790);
@@ -60,6 +61,7 @@ app.route('/api/settlements', settlementRoutes);
 app.route('/api/push', pushRoutes);
 app.route('/api/receipts', receiptRoutes);
 app.route('/api/recurring', recurringRoutes);
+app.route('/api/guest-claims', guestClaimRoutes);
 app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
 
 if (IS_PROD) {

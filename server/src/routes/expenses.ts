@@ -13,6 +13,7 @@ import {
 } from '../validate';
 import { readJson, toExpense, type Category, type Expense } from '../lib/wire';
 import { notifyExpense } from '../lib/notify-events';
+import { resolveMergedShares } from '../lib/guests';
 import { participantsOf, unarchiveAffected } from '../lib/archive';
 import {
   recordRevision,
@@ -303,7 +304,9 @@ app.post('/:id/restore', async (c) => {
   ) {
     throw restoreConflict('version cannot be restored');
   }
-  const snap = parsed.data;
+  // Old versions may name a guest who has since been claimed: restore them
+  // as the account that took the guest's shares over.
+  const snap = { ...parsed.data, shares: resolveMergedShares(parsed.data.shares) };
   const wasDeleted = existing.deleted_at !== null;
   const oldShares = sharesOf(id);
   if (!wasDeleted && sameSnapshot(snap, snapshotOfRow(existing, oldShares))) {

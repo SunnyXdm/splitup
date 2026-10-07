@@ -109,8 +109,13 @@ export function notifyUsers(userIds: Iterable<number>, payload: PayloadFor): voi
       const subsOf = db.prepare<[number], SubscriptionRow>(
         'SELECT id, user_id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?',
       );
+      // Guests can't sign in (so can't subscribe); skip them explicitly anyway.
+      const isGuest = db.prepare<[number], { is_guest: number }>(
+        'SELECT is_guest FROM users WHERE id = ?',
+      );
       const sends: Promise<void>[] = [];
       for (const uid of ids) {
+        if (isGuest.get(uid)?.is_guest) continue;
         const subs = subsOf.all(uid);
         if (subs.length === 0) continue;
         const p = typeof payload === 'function' ? payload(uid) : payload;

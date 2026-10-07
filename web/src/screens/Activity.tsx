@@ -10,6 +10,7 @@ import {
   Sparkles,
   Trash2,
   Undo2,
+  UserRoundCheck,
   UserRoundMinus,
   UserRoundPlus,
   type LucideIcon,
@@ -31,6 +32,10 @@ const TYPE_ICON: Record<ActivityType, LucideIcon> = {
   member_joined: UserRoundPlus,
   member_removed: UserRoundMinus,
   friend_added: HeartHandshake,
+  guest_added: UserRoundPlus,
+  guest_renamed: PencilLine,
+  guest_removed: UserRoundMinus,
+  guest_claimed: UserRoundCheck,
 };
 
 function dayLabel(iso: string): string {

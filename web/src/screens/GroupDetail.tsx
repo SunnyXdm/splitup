@@ -53,7 +53,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { MoneyText } from '@/components/common/MoneyText';
-import { UserAvatar } from '@/components/common/UserAvatar';
+import { GuestPill, UserAvatar } from '@/components/common/UserAvatar';
 import ExplainBalanceSheet, { type ExplainTarget } from '@/components/common/ExplainBalanceSheet';
 import { DraftsChip } from '@/components/expense/DraftsSheet';
 import ExpenseForm from '@/components/expense/ExpenseForm';
@@ -69,6 +69,7 @@ import { buildGroupCsv, downloadCsv } from '@/lib/export-csv';
 import { reminderText, sendReminder } from '@/lib/remind';
 import { myOpenGroupBalances } from '@/lib/archive';
 import { groupBalances, groupExpenses, groupSettlements } from '@/lib/balances';
+import { isGuest } from '@/lib/guests';
 import { formatMoney } from '@/lib/money';
 import {
   useDeleteGroup,
@@ -248,7 +249,7 @@ export default function GroupDetail() {
               ))}
             </div>
             <span className="text-sm text-muted-foreground">
-              {members.length === 1 ? 'Just you' : `${members.length} members`}
+              {memberCountLabel(members)}
             </span>
           </div>
         </div>
@@ -377,8 +378,11 @@ export default function GroupDetail() {
                 const rowContent = (
                   <>
                     <UserAvatar user={u} />
-                    <span className="min-w-0 flex-1 truncate font-medium">
-                      {u.id === meId ? 'You' : u.name}
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <span className="truncate font-medium">
+                        {u.id === meId ? 'You' : u.name}
+                      </span>
+                      {isGuest(u) ? <GuestPill /> : null}
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-0.5">
                       {nets.length === 0 ? (
@@ -681,6 +685,14 @@ export default function GroupDetail() {
       />
     </div>
   );
+}
+
+/** "Just you", "3 members", "2 members · 1 guest" — guests counted apart. */
+function memberCountLabel(members: User[]): string {
+  const guests = members.filter((u) => isGuest(u)).length;
+  const people = members.length - guests;
+  const base = people === 1 ? 'Just you' : `${people} members`;
+  return guests === 0 ? base : `${base} · ${guests} ${guests === 1 ? 'guest' : 'guests'}`;
 }
 
 function GroupDetailSkeleton() {

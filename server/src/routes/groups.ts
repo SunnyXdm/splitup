@@ -3,26 +3,28 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { APP_ORIGIN, requireAuth, type AppEnv } from '../auth';
 import { db, nowIso, type GroupRow, type UserRow } from '../db';
-import { groupCreateBody, groupPatchBody, idParam, memberBody } from '../validate';
-import { readJson, toGroup } from '../lib/wire';
-import { areFriends, groupMemberIds, isMember, memberGroupOr404, recordActivity } from '../lib/expense';
+import { groupCreateBody, groupPatchBody, guestBody, idParam, memberBody } from '../validate';
+import { readJson, toGroup, toUser } from '../lib/wire';
+import {
+  areFriends,
+  groupMemberIds,
+  isMember,
+  memberGroupOr404,
+  realMemberIds,
+  recordActivity,
+} from '../lib/expense';
+import {
+  createClaimToken,
+  createGuest,
+  guestOr404,
+  memberUnsettled,
+  removeGuest,
+  renameGuest,
+} from '../lib/guests';
 import { notifyAddedToGroup } from '../lib/notify-events';
 import { archiveGroup, archivedAtFor, clearGroupPrefs, unarchiveGroup } from '../lib/archive';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** True when the user's net in the group is nonzero in any currency. */
-function memberUnsettled(groupId: number, userId: number): boolean {
-  return (
-    db
-      .prepare<[number, number], { currency: string }>(
-        `SELECT e.currency FROM expense_shares s JOIN expenses e ON e.id = s.expense_id
-         WHERE e.group_id = ? AND e.deleted_at IS NULL AND s.user_id = ?
-         GROUP BY e.currency HAVING SUM(s.paid_cents - s.owed_cents) != 0 LIMIT 1`,
-      )
-      .get(groupId, userId) !== undefined
-  );
-}
 
 /** True when anyone (members or departed share-holders) has a nonzero net. */
 function groupUnsettled(groupId: number): boolean {
@@ -41,10 +43,11 @@ function groupUnsettled(groupId: number): boolean {
  * Removes `me` from the group. The creator role passes to the earliest-joined
  * remaining member; the last member may leave only a fully settled group,
  * which is then archived like a delete (nobody would be left to see it).
+ * Guests don't count as remaining members: they can't open the group.
  */
 function leaveGroup(group: GroupRow, me: UserRow): void {
   if (memberUnsettled(group.id, me.id)) throw new HTTPException(409, { message: 'unsettled' });
-  const others = groupMemberIds(group.id).filter((uid) => uid !== me.id);
+  const others = realMemberIds(group.id).filter((uid) => uid !== me.id);
   if (others.length === 0 && groupUnsettled(group.id)) {
     throw new HTTPException(409, { message: 'unsettled' });
   }
@@ -167,7 +170,7 @@ app.post('/:id/members', async (c) => {
       const addFriend = db.prepare(
         'INSERT OR IGNORE INTO friendships (user_id, friend_id, created_at) VALUES (?, ?, ?)',
       );
-      for (const memberId of groupMemberIds(id)) {
+      for (const memberId of realMemberIds(id)) {
         if (memberId === userId) continue;
         addFriend.run(userId, memberId, now);
         addFriend.run(memberId, userId, now);
@@ -202,6 +205,13 @@ app.delete('/:id/members/:userId', (c) => {
   }
   if (targetId === group.created_by) {
     throw new HTTPException(403, { message: 'the group creator cannot be removed' });
+  }
+  const target = db
+    .prepare<[number], { is_guest: number }>('SELECT is_guest FROM users WHERE id = ?')
+    .get(targetId);
+  if (target?.is_guest) {
+    removeGuest(me, group, guestOr404(id, targetId));
+    return c.body(null, 204);
   }
   // Same safety rule as leaving: only settled members can be removed, so a
   // mistaken add is instantly fixable but debts can never be kicked away.
@@ -241,6 +251,50 @@ app.delete('/:id/archive', (c) => {
   const group = memberGroupOr404(id, me.id);
   unarchiveGroup(id, me.id);
   return c.json(toGroup(group, groupMemberIds(id), null));
+});
+
+// ---------------------------------------------------------------------------
+// Guests: people without Splitup, tracked inside this group (see lib/guests.ts)
+// ---------------------------------------------------------------------------
+
+app.post('/:id/guests', async (c) => {
+  const me = c.get('user');
+  const id = idParam.parse(c.req.param('id'));
+  const { name } = guestBody.parse(await readJson(c));
+  const group = memberGroupOr404(id, me.id);
+  const guest = createGuest(me, group, name);
+  return c.json({
+    user: toUser(guest),
+    group: toGroup(group, groupMemberIds(id), archivedAtFor(id, me.id)),
+  });
+});
+
+app.patch('/:id/guests/:userId', async (c) => {
+  const me = c.get('user');
+  const id = idParam.parse(c.req.param('id'));
+  const guestId = idParam.parse(c.req.param('userId'));
+  const { name } = guestBody.parse(await readJson(c));
+  const group = memberGroupOr404(id, me.id);
+  const guest = guestOr404(id, guestId);
+  return c.json({ user: toUser(renameGuest(me, group, guest, name)) });
+});
+
+app.delete('/:id/guests/:userId', (c) => {
+  const me = c.get('user');
+  const id = idParam.parse(c.req.param('id'));
+  const guestId = idParam.parse(c.req.param('userId'));
+  const group = memberGroupOr404(id, me.id);
+  removeGuest(me, group, guestOr404(id, guestId));
+  return c.body(null, 204);
+});
+
+app.post('/:id/guests/:userId/claim-link', (c) => {
+  const me = c.get('user');
+  const id = idParam.parse(c.req.param('id'));
+  const guestId = idParam.parse(c.req.param('userId'));
+  memberGroupOr404(id, me.id);
+  const token = createClaimToken(me, guestOr404(id, guestId));
+  return c.json({ token, url: `${APP_ORIGIN}/claim/${token}` });
 });
 
 app.post('/:id/invites', (c) => {

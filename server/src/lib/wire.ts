@@ -18,6 +18,8 @@ export interface User {
   name: string;
   email: string | null;
   picture: string | null;
+  /** True for a guest participant (no account; tracked inside one group). */
+  isGuest?: boolean;
 }
 
 export interface Me extends User {
@@ -91,7 +93,11 @@ export type ActivityType =
   | 'group_renamed'
   | 'member_joined'
   | 'member_removed'
-  | 'friend_added';
+  | 'friend_added'
+  | 'guest_added'
+  | 'guest_renamed'
+  | 'guest_removed'
+  | 'guest_claimed';
 
 export interface ActivityItem {
   id: number;
@@ -194,14 +200,33 @@ export interface InvitePreview {
   alreadyMember: boolean;
 }
 
+/** GET /api/guest-claims/:token — what accepting the claim link would do. */
+export interface GuestClaimPreview {
+  token: string;
+  guest: User;
+  groupId: number;
+  groupName: string;
+  emoji: string;
+  inviter: User;
+  /** The caller is already a member of the group (their shares get combined). */
+  alreadyMember: boolean;
+}
+
 export const toUser = (r: UserRow): User => ({
   id: r.id,
   name: r.name,
   email: r.email,
   picture: r.picture,
+  ...(r.is_guest ? { isGuest: true } : {}),
 });
 
-export const toMe = (r: UserRow): Me => ({ ...toUser(r), defaultCurrency: r.default_currency });
+export const toMe = (r: UserRow): Me => ({
+  id: r.id,
+  name: r.name,
+  email: r.email,
+  picture: r.picture,
+  defaultCurrency: r.default_currency,
+});
 
 export const toGroup = (
   r: GroupRow,

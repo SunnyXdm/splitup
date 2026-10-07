@@ -4,7 +4,7 @@ import { requireAuth, type AppEnv } from '../auth';
 import { db, nowIso, type GroupRow } from '../db';
 import { inviteTokenParam } from '../validate';
 import { toGroup, type InvitePreview } from '../lib/wire';
-import { groupMemberIds, isMember, recordActivity } from '../lib/expense';
+import { groupMemberIds, isMember, realMemberIds, recordActivity } from '../lib/expense';
 
 interface InviteRow {
   token: string;
@@ -65,7 +65,8 @@ app.post('/:token/join', (c) => {
   if (!isMember(group.id, me.id)) {
     db.transaction(() => {
       const now = nowIso();
-      const members = groupMemberIds(group.id);
+      // Guests are nobody's friends: only real members befriend the joiner.
+      const members = realMemberIds(group.id);
       db.prepare('INSERT INTO group_members (group_id, user_id, joined_at) VALUES (?, ?, ?)').run(
         group.id,
         me.id,

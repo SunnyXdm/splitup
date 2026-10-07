@@ -6,6 +6,7 @@ import { clearPendingInvite, readPendingInvite, pendingInvitePath } from '@/lib/
 import { useNotificationNavigation, usePushReconcile } from '@/lib/push-hooks';
 import { useSyncData } from '@/lib/queries';
 import Account from './screens/Account';
+import Claim from './screens/Claim';
 import Activity from './screens/Activity';
 import ArchivedGroups from './screens/ArchivedGroups';
 import FriendDetail from './screens/FriendDetail';
@@ -67,6 +68,7 @@ export default function App() {
           <Route path="/account" element={<Account />} />
           <Route path="/join/:token" element={<Join />} />
           <Route path="/friend/:token" element={<FriendInvite />} />
+          <Route path="/claim/:token" element={<Claim />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </AppShell>

@@ -27,6 +27,7 @@ splitting expenses with friends, built to be safe, precise, and pleasant to use.
 ## Features
 
 - **Groups and friends** — multi-user groups with shareable invite links, plus direct friend-to-friend expenses outside any group.
+- **Guests** — add people without Splitup to a group by name and track their share; a claim link later moves their balance onto their own account (totals are conserved exactly; suggested transfers may re-route since they order people by account).
 - **Four split modes** — equal, unequal, percent, or shares, with largest-remainder rounding so the cents always add up to the total.
 - **Simplified debts** — balances are netted per group and settle-up suggests the minimum set of transfers, so settling through one person never creates phantom debts.
 - **Multi-currency** — each group locks its currency; totals are reported per currency, never converted behind your back.
