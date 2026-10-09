@@ -154,7 +154,8 @@ export default function Account() {
               value={me.defaultCurrency}
               onValueChange={changeCurrency}
               disabled={!online || updateMe.isPending}
-              options={currencyPickerOptions()}
+              options={currencyPickerOptions([me.defaultCurrency])}
+              searchable
             />
             <p className="text-sm text-muted-foreground">
               Used for new groups and non-group expenses, and shown first in your totals.

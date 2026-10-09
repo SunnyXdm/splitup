@@ -20,7 +20,6 @@ import {
   Repeat2,
   Trash2,
   TriangleAlert,
-  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { CategoryIcon } from '@/components/common/CategoryIcon';
@@ -49,7 +48,6 @@ import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from '@/
 import { PickerSelect } from '@/components/ui/picker-select';
 import { currencyPickerOptions } from '@/components/common/currency-options';
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -80,7 +78,13 @@ import {
   type FormErrors,
   type ScopeChoice,
 } from '@/lib/expense-form';
-import { downscaleImage, receiptPrefill } from '@/lib/receipt';
+import { downscaleImage, partialPrefill, receiptPrefill } from '@/lib/receipt';
+import {
+  applyScanEvent,
+  INITIAL_PROGRESS,
+  modelLabel,
+  type ScanProgress,
+} from '@/lib/scan-progress';
 import {
   CADENCE_OPTIONS,
   cadenceLabel,
@@ -116,6 +120,7 @@ import { DiscardChangesDialog, useCloseGuard, type CloseGuard } from './close-gu
 import ExpenseHistorySheet from './ExpenseHistorySheet';
 import { centsToInput, currencySymbol, relativeDay, todayISO } from './money-input';
 import { PayerPicker } from './PayerPicker';
+import { FillFlash, ScanningCard, ScanReviewBanner, type ScanReview } from './ReceiptScan';
 import { ScopeField } from './ScopePicker';
 import { SplitEditor } from './SplitEditor';
 import { splitStateFromExpense } from './split-state';
@@ -180,13 +185,6 @@ export default function ExpenseForm({
       <DiscardChangesDialog {...confirm} description="Your edits haven’t been saved." />
     </>
   );
-}
-
-interface ScanReview {
-  warnings: string[];
-  confidence: 'high' | 'medium' | 'low';
-  /** The model's own remark about something unclear, if any. */
-  remark: string | null;
 }
 
 type FormMode =
@@ -548,7 +546,10 @@ function FormFields({
     if (!scanPhoto) return;
     return () => URL.revokeObjectURL(scanPhoto);
   }, [scanPhoto]);
+  const [scanProgress, setScanProgress] = useState<ScanProgress>(INITIAL_PROGRESS);
   const [scanReview, setScanReview] = useState<ScanReview | null>(null);
+  // Per-field counters: bumping one replays that field's "just filled" wash.
+  const [filled, setFilled] = useState({ amount: 0, description: 0, date: 0 });
   useEffect(() => () => scanAbort.current?.abort(), []);
 
   const handleReceiptFile = async (file: File | undefined) => {
@@ -559,6 +560,49 @@ function FormFields({
     setScanning(true);
     setScanPhoto(URL.createObjectURL(file));
     setScanReview(null);
+    setScanProgress(INITIAL_PROGRESS);
+    // Fixed for this scan: what the form was in when the photo was taken.
+    const formCurrency = currency;
+    const canChangeCurrency = group === null;
+    let escalatedTo: string | null = null;
+    // Fill fields as they stream in, flashing each one that changes.
+    const applied: { description?: string; date?: string; amount?: string } = {};
+    const fill = (next: {
+      description?: string;
+      date?: string;
+      currency?: string;
+      amountCents?: number;
+    }) => {
+      const cur = next.currency ?? formCurrency;
+      const amount =
+        next.amountCents !== undefined ? centsToInput(next.amountCents, cur) : undefined;
+      const bump = { amount: 0, description: 0, date: 0 };
+      if (next.description && next.description !== applied.description) {
+        applied.description = next.description;
+        bump.description = 1;
+      }
+      if (next.date && next.date !== applied.date) {
+        applied.date = next.date;
+        bump.date = 1;
+      }
+      if (amount && amount !== applied.amount) {
+        applied.amount = amount;
+        bump.amount = 1;
+      }
+      if (!bump.amount && !bump.description && !bump.date && !next.currency) return;
+      setValues((prev) => ({
+        ...prev,
+        ...(bump.description ? { description: next.description! } : {}),
+        ...(bump.date ? { date: next.date! } : {}),
+        ...(next.currency ? { currency: next.currency } : {}),
+        ...(bump.amount ? { amountRaw: amount! } : {}),
+      }));
+      setFilled((f) => ({
+        amount: f.amount + bump.amount,
+        description: f.description + bump.description,
+        date: f.date + bump.date,
+      }));
+    };
     try {
       let image: string;
       try {
@@ -568,25 +612,48 @@ function FormFields({
         return;
       }
       if (ctrl.signal.aborted) return;
-      const { draft, warnings } = await scanReceipt(image, ctrl.signal);
+      const result = await scanReceipt(image, {
+        currency: formCurrency,
+        locale: navigator.language,
+        signal: ctrl.signal,
+        onEvent: (event) => {
+          if (ctrl.signal.aborted) return;
+          if (event.type === 'status' && event.stage === 'escalating') {
+            escalatedTo = event.model ?? null;
+          }
+          if (event.type === 'partial') {
+            fill(partialPrefill(event.fields, formCurrency, canChangeCurrency));
+          }
+          setScanProgress((p) => applyScanEvent(p, event));
+        },
+      });
       if (ctrl.signal.aborted) return;
-      const p = receiptPrefill(draft, currency, group === null);
-      const formCurrency = p.currency ?? currency;
+      const { draft, warnings } = result;
+      const p = receiptPrefill(draft, formCurrency, canChangeCurrency);
+      fill({
+        ...(p.description ? { description: p.description } : {}),
+        ...(p.date ? { date: p.date } : {}),
+        ...(p.currency ? { currency: p.currency } : {}),
+        ...(p.amountCents !== null ? { amountCents: p.amountCents } : {}),
+      });
       setValues((prev) => ({
         ...prev,
-        ...(p.description ? { description: p.description } : {}),
-        ...(p.currency ? { currency: p.currency } : {}),
-        ...(p.amountCents !== null
-          ? { amountRaw: centsToInput(p.amountCents, formCurrency) }
-          : {}),
-        ...(p.date ? { date: p.date } : {}),
+        // A partial fill of the amount that the final read didn't confirm
+        // (e.g. it turned out to be another currency) is taken back out.
+        ...(p.amountCents === null && applied.amount === prev.amountRaw ? { amountRaw: '' } : {}),
         category: p.category,
         ...(p.notes ? { notes: p.notes, showNotes: true } : {}),
       }));
+      const label = modelLabel(result.model);
       setScanReview({
-        warnings: [...(p.currencyNotice ? [p.currencyNotice] : []), ...warnings],
+        // The foreign-total panel already says it; don't repeat it as a bullet.
+        warnings: [...(p.currencyNotice && !p.foreignTotal ? [p.currencyNotice] : []), ...warnings],
         confidence: draft.confidence,
         remark: draft.notes,
+        byline: result.escalated
+          ? `Re-checked with ${modelLabel(escalatedTo ?? result.model)}`
+          : `Scanned with ${label}`,
+        foreignTotal: p.foreignTotal,
       });
     } catch (err) {
       if (ctrl.signal.aborted) return;
@@ -1027,41 +1094,45 @@ function FormFields({
             <div className="flex flex-col gap-4">
               <Field data-invalid={shown('amount')}>
                 <FieldLabel htmlFor={ids.amount}>Amount</FieldLabel>
-                <InputGroup className="h-14 rounded-full">
-                  <InputGroupAddon className="pl-5">
-                    <InputGroupText className="text-xl text-foreground">
-                      {currencySymbol(currency)}
-                    </InputGroupText>
-                  </InputGroupAddon>
-                  <InputGroupInput
-                    id={ids.amount}
-                    inputMode="decimal"
-                    autoComplete="off"
-                    placeholder={centsToInput(0, currency)}
-                    value={values.amountRaw}
-                    onChange={(e) => set('amountRaw', e.target.value)}
-                    aria-invalid={shown('amount') || undefined}
-                    aria-describedby={describe('amount')}
-                    className="text-2xl font-medium tabular-nums md:text-2xl"
-                  />
-                  <InputGroupAddon align="inline-end" className="pr-2">
-                    {group || fixedScope ? (
-                      <InputGroupText className="pr-3">{currency}</InputGroupText>
-                    ) : (
-                      <PickerSelect
-                        title="Currency"
-                        aria-label="Currency"
-                        className="h-11 w-auto gap-1 border-0 bg-muted px-3 font-medium"
-                        value={currency}
-                        onValueChange={(v) => {
-                          set('currency', v);
-                          setCurrencyNotice(null);
-                        }}
-                        options={currencyPickerOptions()}
-                      />
-                    )}
-                  </InputGroupAddon>
-                </InputGroup>
+                <div className="relative">
+                  <InputGroup className="h-14 rounded-full">
+                    <InputGroupAddon className="pl-5">
+                      <InputGroupText className="text-xl text-foreground">
+                        {currencySymbol(currency)}
+                      </InputGroupText>
+                    </InputGroupAddon>
+                    <InputGroupInput
+                      id={ids.amount}
+                      inputMode="decimal"
+                      autoComplete="off"
+                      placeholder={centsToInput(0, currency)}
+                      value={values.amountRaw}
+                      onChange={(e) => set('amountRaw', e.target.value)}
+                      aria-invalid={shown('amount') || undefined}
+                      aria-describedby={describe('amount')}
+                      className="text-2xl font-medium tabular-nums md:text-2xl"
+                    />
+                    <InputGroupAddon align="inline-end" className="pr-2">
+                      {group || fixedScope ? (
+                        <InputGroupText className="pr-3">{currency}</InputGroupText>
+                      ) : (
+                        <PickerSelect
+                          title="Currency"
+                          aria-label="Currency"
+                          className="h-11 w-auto gap-1 border-0 bg-muted px-3 font-medium"
+                          value={currency}
+                          onValueChange={(v) => {
+                            set('currency', v);
+                            setCurrencyNotice(null);
+                          }}
+                          options={currencyPickerOptions([me.defaultCurrency, currency])}
+                          searchable
+                        />
+                      )}
+                    </InputGroupAddon>
+                  </InputGroup>
+                  <FillFlash n={filled.amount} />
+                </div>
                 {shown('amount') ? (
                   <FieldDescription id={ids.err('amount')} className="text-destructive">
                     {check.errors.amount}
@@ -1076,16 +1147,19 @@ function FormFields({
               <Field data-invalid={shown('description')}>
                 <FieldLabel htmlFor={ids.description}>Description</FieldLabel>
                 <div className="flex items-center gap-2">
-                  <Input
-                    id={ids.description}
-                    value={values.description}
-                    onChange={(e) => set('description', e.target.value)}
-                    maxLength={200}
-                    placeholder="Dinner, taxi, rent…"
-                    aria-invalid={shown('description') || undefined}
-                    aria-describedby={describe('description')}
-                    className="h-11 flex-1 rounded-full px-4"
-                  />
+                  <div className="relative flex-1">
+                    <Input
+                      id={ids.description}
+                      value={values.description}
+                      onChange={(e) => set('description', e.target.value)}
+                      maxLength={200}
+                      placeholder="Dinner, taxi, rent…"
+                      aria-invalid={shown('description') || undefined}
+                      aria-describedby={describe('description')}
+                      className="h-11 flex-1 rounded-full px-4"
+                    />
+                    <FillFlash n={filled.description} />
+                  </div>
                   {canScan && online && !scanning ? (
                     <Button
                       type="button"
@@ -1125,10 +1199,13 @@ function FormFields({
                     }}
                   />
                   {scanning ? (
-                    <ScanningCard photo={scanPhoto} onCancel={cancelScan} />
+                    <ScanningCard photo={scanPhoto} progress={scanProgress} onCancel={cancelScan} />
                   ) : scanReview ? (
                     <ScanReviewBanner
                       review={scanReview}
+                      formCurrency={currency}
+                      amountRaw={values.amountRaw}
+                      onAmountChange={(raw) => set('amountRaw', raw)}
                       onRescan={() => fileInputRef.current?.click()}
                       rescanDisabled={!online}
                       onDismiss={() => setScanReview(null)}
@@ -1222,22 +1299,25 @@ function FormFields({
                 <FieldLabel htmlFor={ids.date}>
                   {mode.kind === 'rule' ? 'Next due' : 'Date'}
                 </FieldLabel>
-                <InputGroup className="h-11 rounded-full">
-                  <InputGroupInput
-                    id={ids.date}
-                    type="date"
-                    value={values.date}
-                    onChange={(e) => set('date', e.target.value)}
-                    aria-invalid={shown('date') || undefined}
-                    aria-describedby={describe('date')}
-                    className="pl-4"
-                  />
-                  {dayLabel ? (
-                    <InputGroupAddon align="inline-end" className="pr-4">
-                      <InputGroupText>{dayLabel}</InputGroupText>
-                    </InputGroupAddon>
-                  ) : null}
-                </InputGroup>
+                <div className="relative">
+                  <InputGroup className="h-11 rounded-full">
+                    <InputGroupInput
+                      id={ids.date}
+                      type="date"
+                      value={values.date}
+                      onChange={(e) => set('date', e.target.value)}
+                      aria-invalid={shown('date') || undefined}
+                      aria-describedby={describe('date')}
+                      className="pl-4"
+                    />
+                    {dayLabel ? (
+                      <InputGroupAddon align="inline-end" className="pr-4">
+                        <InputGroupText>{dayLabel}</InputGroupText>
+                      </InputGroupAddon>
+                    ) : null}
+                  </InputGroup>
+                  <FillFlash n={filled.date} />
+                </div>
                 {shown('date') ? (
                   <FieldDescription id={ids.err('date')} className="text-destructive">
                     {check.errors.date}
@@ -1382,101 +1462,6 @@ function RepeatField({
       />
       {hint ? <FieldDescription>{hint}</FieldDescription> : null}
     </Field>
-  );
-}
-
-function ScanningCard({ photo, onCancel }: { photo: string | null; onCancel: () => void }) {
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="flex items-center gap-4 rounded-panel border border-border bg-card p-3 pr-4"
-    >
-      {/* The captured photo with a scan line sweeping down it (transform only). */}
-      <div
-        aria-hidden="true"
-        className="relative h-20 w-16 shrink-0 overflow-hidden rounded-xl bg-muted"
-      >
-        {photo ? <img src={photo} alt="" className="size-full object-cover" /> : null}
-        <div className="absolute inset-x-0 top-0 h-6 animate-[scan-sweep_1.8s_ease-in-out_infinite] [--scan-travel:80px]">
-          <div className="h-full bg-linear-to-b from-transparent to-signal/35" />
-          <div className="h-0.5 bg-signal shadow-[0_0_8px_var(--signal)]" />
-        </div>
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <Spinner />
-          Reading receipt…
-        </div>
-        <div className="flex flex-col gap-2" aria-hidden="true">
-          <Skeleton className="h-2.5 w-2/3 rounded-full" />
-          <Skeleton className="h-2.5 w-1/2 rounded-full" />
-        </div>
-      </div>
-      <Button type="button" variant="ghost" size="sm" className="rounded-full" onClick={onCancel}>
-        Cancel
-      </Button>
-    </div>
-  );
-}
-
-function ScanReviewBanner({
-  review,
-  onRescan,
-  rescanDisabled,
-  onDismiss,
-}: {
-  review: ScanReview;
-  onRescan: () => void;
-  rescanDisabled: boolean;
-  onDismiss: () => void;
-}) {
-  const low = review.confidence === 'low';
-  return (
-    <div role="status" className="flex flex-col gap-2 rounded-panel bg-warning/10 p-4 text-sm">
-      <div className="flex items-start gap-2">
-        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
-        <p className="flex-1 font-medium">Check the amounts before saving</p>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          className="-mt-1 -mr-1 rounded-full"
-          aria-label="Dismiss"
-          onClick={onDismiss}
-        >
-          <X />
-        </Button>
-      </div>
-      {low ? (
-        <p className="font-medium text-warning">
-          Low confidence — the photo was hard to read. Double-check every field.
-        </p>
-      ) : review.confidence === 'medium' ? (
-        <p className="text-muted-foreground">Some values were hard to read.</p>
-      ) : null}
-      {review.warnings.length > 0 || review.remark ? (
-        <ul className="flex list-disc flex-col gap-1 pl-5 text-muted-foreground">
-          {review.warnings.map((w) => (
-            <li key={w}>{w}</li>
-          ))}
-          {review.remark ? <li>{review.remark}</li> : null}
-        </ul>
-      ) : null}
-      <p className="text-muted-foreground">
-        Pick who paid and how to split, then add it.
-        <Button
-          type="button"
-          variant="link"
-          size="sm"
-          className="h-auto px-1.5 py-0 align-baseline"
-          disabled={rescanDisabled}
-          onClick={onRescan}
-        >
-          Scan again
-        </Button>
-      </p>
-    </div>
   );
 }
 

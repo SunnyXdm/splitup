@@ -1,6 +1,7 @@
 import * as React from "react"
-import { CheckIcon, ChevronDownIcon } from "lucide-react"
+import { CheckIcon, ChevronDownIcon, SearchIcon } from "lucide-react"
 
+import { matchesQuery } from "@/lib/picker-match"
 import { cn } from "@/lib/utils"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 
@@ -29,6 +30,8 @@ interface PickerSelectProps {
   "aria-label"?: string
   /** Trigger text override (e.g. a filter chip reading "Paid by" at its default). */
   displayLabel?: string
+  /** Show a search field above long lists (matches label, sublabel and value). */
+  searchable?: boolean
 }
 
 /**
@@ -50,8 +53,14 @@ function PickerSelect({
   "aria-labelledby": labelledBy,
   "aria-label": ariaLabel,
   displayLabel,
+  searchable = false,
 }: PickerSelectProps) {
   const [open, setOpen] = React.useState(false)
+  const [query, setQuery] = React.useState("")
+  const popupRef = React.useRef<HTMLDivElement>(null)
+  const shown = searchable
+    ? options.filter((o) => matchesQuery(o, query))
+    : options
   const selected = options.find((o) => o.value === value)
   const valueId = React.useId()
   const nameId = React.useId()
@@ -68,7 +77,10 @@ function PickerSelect({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-labelledby={nameRef ? `${nameRef} ${valueId}` : undefined}
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          setQuery("")
+          setOpen(true)
+        }}
         className={cn(
           "relative flex h-11 w-full items-center justify-between gap-2 rounded-full border border-input bg-transparent px-4 text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-focus-ring disabled:cursor-not-allowed disabled:opacity-50",
           className
@@ -90,15 +102,52 @@ function PickerSelect({
 
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent
+          ref={popupRef}
+          // Touch: don't jump into the search field (the keyboard would cover
+          // the list); keyboard users land on it as the first control.
+          initialFocus={(type) => (type === "keyboard" ? true : popupRef.current)}
           side="bottom"
-          className="mx-auto max-h-[80dvh] w-full max-w-xl rounded-t-[28px]"
+          className="mx-auto max-h-[80dvh] w-full max-w-xl rounded-t-[28px] outline-none"
         >
           <SheetHeader className="pb-0">
             <SheetTitle className="text-xl">{title}</SheetTitle>
           </SheetHeader>
+          {searchable ? (
+            <div className="px-4 pb-2">
+              <label className="relative block">
+                <span className="sr-only">Search {title.toLowerCase()}</span>
+                <SearchIcon
+                  aria-hidden="true"
+                  className="pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2 text-muted-foreground"
+                />
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search"
+                  autoComplete="off"
+                  enterKeyHint="search"
+                  onKeyDown={(e) => {
+                    // Enter picks the single (or first) match.
+                    if (e.key === "Enter" && shown[0] && !shown[0].disabled) {
+                      e.preventDefault()
+                      onValueChange(shown[0].value)
+                      setOpen(false)
+                    }
+                  }}
+                  className="h-11 w-full rounded-full border border-input bg-transparent pr-4 pl-10 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-focus-ring md:text-sm [&::-webkit-search-cancel-button]:appearance-none"
+                />
+              </label>
+            </div>
+          ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <div className="flex flex-col gap-1">
-              {options.map((option) => {
+              {searchable && shown.length === 0 ? (
+                <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  Nothing matches “{query.trim()}”.
+                </p>
+              ) : null}
+              {shown.map((option) => {
                 const isSelected = option.value === value
                 return (
                   <button

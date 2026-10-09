@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isSupportedCurrency } from './lib/currency';
 import { splitMetaProblem } from './lib/split-meta';
 
 export const CATEGORIES = [
@@ -28,7 +29,10 @@ const optionalText = (max: number) =>
     .transform((v) => (v ? v : undefined));
 
 export const MAX_CENTS = 100_000_000;
-const currency = z.string().regex(/^[A-Z]{3}$/);
+const currency = z
+  .string()
+  .regex(/^[A-Z]{3}$/)
+  .refine(isSupportedCurrency, 'unsupported currency');
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** A real calendar date: YYYY-MM-DD that survives a UTC round-trip (no 2024-02-30). */
@@ -134,7 +138,10 @@ function refineExpense(e: z.infer<typeof expenseFields>, ctx: z.RefinementCtx): 
       e.shares.some((s) => s.paidCents === 0 && s.owedCents === e.amountCents)
     )
   ) {
-    ctx.addIssue({ code: 'custom', message: 'a payment needs exactly one payer and one recipient' });
+    ctx.addIssue({
+      code: 'custom',
+      message: 'a payment needs exactly one payer and one recipient',
+    });
   }
   if (e.split !== undefined) {
     const problem = e.isPayment

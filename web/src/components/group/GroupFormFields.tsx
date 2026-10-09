@@ -66,7 +66,8 @@ export default function GroupFormFields({
           value={values.currency}
           disabled={currencyLocked}
           onValueChange={(currency) => onChange({ ...values, currency })}
-          options={currencyPickerOptions()}
+          options={currencyPickerOptions([values.currency])}
+          searchable
         />
         {currencyLocked ? (
           <FieldDescription>

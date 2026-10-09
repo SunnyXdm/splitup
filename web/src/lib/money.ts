@@ -1,4 +1,49 @@
-export const CURRENCIES = ['INR', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'SGD', 'AED', 'CHF'] as const;
+/** Shown first in currency pickers, after the user's own default. */
+export const COMMON_CURRENCIES = [
+  'INR',
+  'LKR',
+  'USD',
+  'EUR',
+  'GBP',
+  'AED',
+  'SGD',
+  'AUD',
+  'CAD',
+  'JPY',
+];
+
+// Not money (SDRs, Sucre, test/fund codes).
+const NON_MONEY = new Set(['XDR', 'XSU', 'XUA', 'XBA', 'XBB', 'XBC', 'XBD', 'XTS', 'XXX']);
+
+function supportedCurrencies(): string[] {
+  let codes: string[];
+  try {
+    codes = Intl.supportedValuesOf('currency');
+  } catch {
+    return [...COMMON_CURRENCIES, 'CHF'].sort();
+  }
+  let names: Intl.DisplayNames | null = null;
+  try {
+    names = new Intl.DisplayNames('en', { type: 'currency' });
+  } catch {
+    // older engines: keep every code
+  }
+  // Withdrawn currencies carry their end year in ICU's name ("… (1964—2022)").
+  const out = codes.filter(
+    (c) => /^[A-Z]{3}$/.test(c) && !NON_MONEY.has(c) && !/\(\d{4}/.test(names?.of(c) ?? ''),
+  );
+  return out.length > 0 ? out : [...COMMON_CURRENCIES, 'CHF'].sort();
+}
+
+/**
+ * Every ISO 4217 currency this browser can format (≈160), alphabetical. Minor
+ * digits come from Intl too: currencyDigits('JPY') is 0, ('BHD') is 3.
+ */
+export const CURRENCIES: readonly string[] = supportedCurrencies();
+
+export function isSupportedCurrency(code: string): boolean {
+  return CURRENCIES.includes(code);
+}
 
 export const MAX_CENTS = 100_000_000;
 

@@ -3,12 +3,17 @@
  * scanned draft into form prefill values. Everything except the canvas/bitmap
  * glue in `downscaleImage` is pure and unit-tested.
  */
-import { CURRENCIES, currencyDigits, formatMoney } from "./money"
+import { currencyDigits, formatMoney, isSupportedCurrency } from "./money"
 import type { Category, ReceiptDraft } from "./types"
 
-export const MAX_EDGE = 1600
-export const TARGET_BYTES = 1.5 * 1024 * 1024
-const QUALITIES = [0.8, 0.7, 0.6, 0.5]
+/**
+ * Long edge sent to the model. Claude reads up to 2576px; ~2000px keeps
+ * small receipt print legible at about 2–3k image tokens.
+ */
+export const MAX_EDGE = 2000
+/** The server takes ≤ 3 MB of image (4 MB request); stay well under it. */
+export const TARGET_BYTES = 2 * 1024 * 1024
+const QUALITIES = [0.85, 0.78, 0.7, 0.6]
 
 /** Scale (w, h) down so the long edge is ≤ maxEdge; never upscales. */
 export function fitWithin(
@@ -106,7 +111,10 @@ async function decode(file: Blob): Promise<Drawable> {
   }
 }
 
-/** Photo → JPEG data URL, long edge ≤ 1600px, aiming for < 1.5 MB. */
+/**
+ * Photo → JPEG data URL: EXIF orientation applied, long edge ≤ 2000px,
+ * quality 0.85 stepping down only if needed to stay under ~2 MB.
+ */
 export async function downscaleImage(file: Blob): Promise<string> {
   const img = await decode(file)
   try {
@@ -148,6 +156,12 @@ export interface ReceiptPrefill {
   notes: string | null
   /** Shown above the form instead of silently converting. */
   currencyNotice: string | null
+  /**
+   * The receipt's own total when it can't go into the amount (a group in
+   * another currency): shown as "Receipt total: LKR 780.00" next to an input
+   * for the amount in the form's currency. Never silently dropped.
+   */
+  foreignTotal: { currency: string; cents: number } | null
 }
 
 const MAX_NOTES = 1000
@@ -163,22 +177,59 @@ export function tidyName(name: string): string {
     )
 }
 
-/** Compact itemized notes: "2× Masala Chai — ₹240.00", then tax/tip/discount. */
+/** Safe money formatting for any ISO code (falls back to "LKR 780.00"). */
+function moneyIn(cents: number, currency: string): string {
+  try {
+    return formatMoney(cents, currency)
+  } catch {
+    return `${currency} ${(cents / 100).toFixed(2)}`
+  }
+}
+
+/**
+ * Compact itemized notes: "2× Masala Chai — ₹240.00", then each tax, charge
+ * and discount as printed ("CGST 2.5% — ₹15.71"), then — when the receipt is
+ * in another currency than the expense — its total.
+ */
 export function itemizedNotes(
   draft: ReceiptDraft,
-  currency: string
+  currency: string,
+  receiptTotalLine = false
 ): string | null {
-  const money = (c: number) => formatMoney(c, currency)
+  const money = (c: number) => moneyIn(c, currency)
   const lines = draft.lineItems.map((it) => {
     const qty =
       it.quantity !== null ? `${Number(it.quantity.toFixed(3))}× ` : ""
     return `${qty}${it.name} — ${money(it.amountCents)}`
   })
   const extra: string[] = []
-  if (draft.taxCents) extra.push(`Tax — ${money(draft.taxCents)}`)
-  if (draft.tipCents) extra.push(`Tip/service — ${money(draft.tipCents)}`)
-  if (draft.discountCents)
+  if (draft.taxes && draft.taxes.length > 0) {
+    for (const t of draft.taxes) {
+      extra.push(
+        `${t.label}${t.inclusive ? " (incl.)" : ""} — ${money(t.amountCents)}`
+      )
+    }
+  } else if (draft.taxCents) {
+    extra.push(`Tax — ${money(draft.taxCents)}`)
+  }
+  if (draft.fees && draft.fees.length > 0) {
+    for (const f of draft.fees) {
+      const sign = f.amountCents < 0 ? "−" : ""
+      extra.push(`${f.label} — ${sign}${money(Math.abs(f.amountCents))}`)
+    }
+  } else if (draft.tipCents) {
+    extra.push(`Tip/service — ${money(draft.tipCents)}`)
+  }
+  if (draft.discounts && draft.discounts.length > 0) {
+    for (const d of draft.discounts) {
+      extra.push(`${d.label} — −${money(d.amountCents)}`)
+    }
+  } else if (draft.discountCents) {
     extra.push(`Discount — −${money(draft.discountCents)}`)
+  }
+  if (receiptTotalLine && draft.totalCents !== null) {
+    extra.push(`Receipt total — ${money(draft.totalCents)}`)
+  }
   if (lines.length === 0 && extra.length === 0) return null
 
   // Keep within the notes limit, dropping items (not totals) from the end.
@@ -214,16 +265,12 @@ export function receiptPrefill(
   let currency: string | null = null
   let currencyNotice: string | null = null
   let usable = receiptCurrency === formCurrency
-  if (
-    !usable &&
-    canChangeCurrency &&
-    (CURRENCIES as readonly string[]).includes(receiptCurrency)
-  ) {
+  if (!usable && canChangeCurrency && isSupportedCurrency(receiptCurrency)) {
     currency = receiptCurrency
     usable = true
   } else if (!usable) {
     currencyNotice = canChangeCurrency
-      ? `Receipt is in ${receiptCurrency}, which Splitup doesn't support — enter the amount yourself.`
+      ? `Receipt is in ${receiptCurrency} — enter the amount in ${formCurrency}.`
       : `Receipt is in ${receiptCurrency}; this group uses ${formCurrency}. Enter the amount in ${formCurrency}.`
   }
   if (draft.currency === null && draft.totalCents !== null) {
@@ -231,7 +278,7 @@ export function receiptPrefill(
   }
 
   // Notes amounts are always in the receipt's own currency, mismatched or not
-  // (when it's unsupported, Intl can still format any ISO code).
+  // (Intl can format any ISO code).
   let notesCurrency = receiptCurrency
   try {
     currencyDigits(notesCurrency)
@@ -245,7 +292,78 @@ export function receiptPrefill(
     currency,
     date: draft.date,
     category: draft.category,
-    notes: itemizedNotes(draft, notesCurrency),
+    notes: itemizedNotes(draft, notesCurrency, !usable),
     currencyNotice,
+    foreignTotal:
+      !usable && draft.totalCents !== null
+        ? { currency: receiptCurrency, cents: draft.totalCents }
+        : null,
   }
+}
+
+/** "Receipt total: LKR 780.00" — the code spelled out so it can't be misread. */
+export function foreignTotalLabel(total: {
+  currency: string
+  cents: number
+}): string {
+  let digits = 2
+  try {
+    digits = currencyDigits(total.currency)
+  } catch {
+    // unknown to this browser
+  }
+  const amount = (total.cents / 10 ** digits).toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+  return `${total.currency} ${amount}`
+}
+
+/** Field-by-field prefill from a partial (still streaming) scan. */
+export function partialPrefill(
+  fields: {
+    merchant?: string | null
+    date?: string | null
+    currency?: string | null
+    totalCents?: number | null
+  },
+  formCurrency: string,
+  canChangeCurrency: boolean
+): {
+  description?: string
+  date?: string
+  currency?: string
+  amountCents?: number
+} {
+  const out: {
+    description?: string
+    date?: string
+    currency?: string
+    amountCents?: number
+  } = {}
+  if (fields.merchant) {
+    out.description = tidyName(fields.merchant).slice(0, 200)
+  }
+  if (fields.date) out.date = fields.date
+  const cur = fields.currency ?? null
+  let target = formCurrency
+  if (
+    cur &&
+    cur !== formCurrency &&
+    canChangeCurrency &&
+    isSupportedCurrency(cur)
+  ) {
+    out.currency = cur
+    target = cur
+  }
+  // The amount only fills in once the currency is known to match.
+  if (
+    fields.totalCents != null &&
+    fields.totalCents > 0 &&
+    cur !== null &&
+    cur === target
+  ) {
+    out.amountCents = fields.totalCents
+  }
+  return out
 }

@@ -265,17 +265,40 @@ export interface ReceiptLineItem {
   amountCents: number;
 }
 
+export interface ReceiptTax {
+  /** CGST, SGST, UTGST, IGST, CESS, GST, VAT, SSCL, SALES_TAX or OTHER. */
+  kind: string;
+  label: string;
+  ratePercent: number | null;
+  amountCents: number;
+  /** Already included in the item prices. */
+  inclusive: boolean;
+}
+
+export interface ReceiptFee {
+  /** SERVICE_CHARGE, TIP, DELIVERY, PACKAGING, ROUND_OFF or OTHER. */
+  kind: string;
+  label: string;
+  amountCents: number;
+}
+
 /** POST /api/receipts/scan — amounts are minor units of `currency`. */
 export interface ReceiptDraft {
   merchant: string | null;
   date: string | null;
+  dateRaw?: string | null;
   currency: string | null;
+  currencyRaw?: string | null;
   totalCents: number | null;
   subtotalCents: number | null;
   taxCents: number | null;
   tipCents: number | null;
   discountCents: number | null;
+  taxes?: ReceiptTax[];
+  fees?: ReceiptFee[];
+  discounts?: { label: string; amountCents: number }[];
   lineItems: ReceiptLineItem[];
+  gstin?: string | null;
   category: Category;
   confidence: 'high' | 'medium' | 'low';
   notes: string | null;
@@ -284,8 +307,33 @@ export interface ReceiptDraft {
 export interface ReceiptScanResult {
   draft: ReceiptDraft;
   warnings: string[];
+  /** Fields the warnings point at: total, date, currency, taxes, line_items… */
+  warningFields: string[];
   model: string;
+  /** "Sonnet 5.5" */
+  modelLabel: string;
+  /** A second, stronger model re-checked the first read. */
+  escalated: boolean;
 }
+
+export type ScanStage = 'reading' | 'thinking' | 'extracting' | 'checking' | 'escalating';
+
+/** Fields that fill in while the scan is still streaming. */
+export interface ScanPartialFields {
+  merchant?: string | null;
+  date?: string | null;
+  currency?: string | null;
+  totalCents?: number | null;
+  lineItems?: { name: string; amountCents: number }[];
+}
+
+/** One event of the POST /api/receipts/scan text/event-stream. */
+export type ScanEvent =
+  | { type: 'status'; stage: ScanStage; model?: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'partial'; fields: ScanPartialFields }
+  | ({ type: 'result' } & ReceiptScanResult)
+  | { type: 'error'; code: string; message: string };
 
 /** An expense's user-facing state at one point in its history. */
 export interface ExpenseSnapshot {

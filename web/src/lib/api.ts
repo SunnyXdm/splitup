@@ -1,4 +1,4 @@
-import type { ReceiptScanResult } from './types';
+import type { ReceiptScanResult, ScanEvent } from './types';
 
 export class ApiError extends Error {
   status: number;
@@ -137,13 +137,124 @@ export function errorMessage(err: unknown): string {
   return 'Something went wrong — please try again.';
 }
 
-/** Send a (downscaled) receipt photo for extraction into a draft expense. */
-export function scanReceipt(image: string, signal?: AbortSignal): Promise<ReceiptScanResult> {
-  return api<ReceiptScanResult>('/api/receipts/scan', { method: 'POST', body: { image }, signal });
+/** A failure the scan stream reported after the request was accepted. */
+export class ScanStreamError extends Error {
+  code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'ScanStreamError';
+    this.code = code;
+  }
+}
+
+/**
+ * Incremental Server-Sent Events parser: feed it decoded text chunks in any
+ * split, get one callback per complete `data:` frame. Comments (": ping") and
+ * malformed frames are skipped.
+ */
+export function createSseParser(onEvent: (event: ScanEvent) => void): (chunk: string) => void {
+  let buffer = '';
+  return (chunk) => {
+    buffer += chunk;
+    for (;;) {
+      const m = /\r?\n\r?\n/.exec(buffer);
+      if (!m) return;
+      const frame = buffer.slice(0, m.index);
+      buffer = buffer.slice(m.index + m[0].length);
+      const data = frame
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(line.startsWith('data: ') ? 6 : 5))
+        .join('\n');
+      if (!data) continue;
+      try {
+        onEvent(JSON.parse(data) as ScanEvent);
+      } catch {
+        // not JSON: ignore the frame
+      }
+    }
+  };
+}
+
+export interface ScanOptions {
+  /** The form's currency: a hint for "Rs." and friends. */
+  currency?: string;
+  /** Device locale, a hint for DD/MM vs MM/DD. */
+  locale?: string;
+  signal?: AbortSignal;
+  /** Every stream event as it arrives (status, thinking, partial, …). */
+  onEvent?: (event: ScanEvent) => void;
+}
+
+/**
+ * Send a (downscaled) receipt photo for extraction into a draft expense.
+ * The server streams progress as text/event-stream over this POST (fetch,
+ * not EventSource: it needs the body and the CSRF header); resolves with the
+ * final result, rejects with ApiError (refused up front) or ScanStreamError.
+ */
+export async function scanReceipt(
+  image: string,
+  { currency, locale, signal, onEvent }: ScanOptions = {},
+): Promise<ReceiptScanResult> {
+  const res = await fetch('/api/receipts/scan', {
+    method: 'POST',
+    headers: {
+      'X-CSRF': '1',
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    credentials: 'include',
+    signal,
+    body: JSON.stringify({ image, currency, locale }),
+  });
+  if (!res.ok || !res.body) {
+    let data: unknown = null;
+    try {
+      data = await res.json();
+    } catch {
+      // non-JSON error body
+    }
+    const message =
+      data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
+        ? data.error
+        : `HTTP ${res.status}`;
+    throw new ApiError(res.status, message, data);
+  }
+
+  let result: ReceiptScanResult | null = null;
+  let failure: ScanStreamError | null = null;
+  const feed = createSseParser((event) => {
+    if (event.type === 'result') {
+      result = {
+        draft: event.draft,
+        warnings: event.warnings,
+        warningFields: event.warningFields ?? [],
+        model: event.model,
+        modelLabel: event.modelLabel,
+        escalated: event.escalated,
+      };
+    } else if (event.type === 'error') {
+      failure = new ScanStreamError(event.code, event.message);
+    }
+    onEvent?.(event);
+  });
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    feed(value);
+    if (result || failure) break;
+  }
+  void reader.cancel().catch(() => {});
+  if (failure) throw failure;
+  if (!result) throw new ScanStreamError('failed', 'The scan stopped before it finished.');
+  return result;
 }
 
 /** Friendly copy for a failed receipt scan. */
 export function scanErrorMessage(err: unknown): string {
+  if (err instanceof ScanStreamError) return err.message;
   if (err instanceof ApiError) {
     if (err.status === 429) {
       return err.message === 'busy'

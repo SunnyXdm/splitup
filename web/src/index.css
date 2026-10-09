@@ -505,6 +505,17 @@ html[data-route-transition='back']::view-transition-new(root) {
   100% { transform: translateY(var(--scan-travel, 72px)); opacity: 0; }
 }
 
+/* Receipt scan: a field the scan just filled gets the same soft signal wash
+   as a newly added row (opacity only, on an overlay — the input never moves). */
+@keyframes field-wash {
+  0%, 20% { opacity: 0.16; }
+  100% { opacity: 0; }
+}
+/* Receipt scan: new lines in the thinking panel settle in. */
+@keyframes thought-in {
+  from { opacity: 0; translate: 0 4px; }
+}
+
 /* Success check: ring pops in, then the tick draws (stroke-dashoffset). */
 @keyframes check-pop {
   from { opacity: 0; scale: 0.6; rotate: -12deg; }

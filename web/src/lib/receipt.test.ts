@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 import {
   compressToBudget,
   fitWithin,
+  foreignTotalLabel,
   itemizedNotes,
+  partialPrefill,
   receiptPrefill,
   tidyName,
 } from "./receipt"
@@ -49,21 +51,22 @@ describe("compressToBudget", () => {
   it("returns the first attempt that fits", async () => {
     const calls: Array<[number, number, number]> = []
     const blob = await compressToBudget(4000, 3000, fake(calls), {
-      budget: 2_000_000,
+      budget: 4_000_000,
     })
-    expect(calls).toEqual([[1600, 1200, 0.8]])
-    expect(blob.size).toBeLessThanOrEqual(2_000_000)
+    // 2000px long edge at JPEG 0.85 first (EXIF-rotated upstream).
+    expect(calls).toEqual([[2000, 1500, 0.85]])
+    expect(blob.size).toBeLessThanOrEqual(4_000_000)
   })
 
   it("lowers quality, then size, until under budget", async () => {
     const calls: Array<[number, number, number]> = []
     const blob = await compressToBudget(4000, 3000, fake(calls), {
-      budget: 600_000,
+      budget: 1_500_000,
     })
-    expect(blob.size).toBeLessThanOrEqual(600_000)
-    // All four qualities at 1600 fail (min 1600×1200×0.5 = 960k), then 1200 wide.
-    expect(calls.slice(0, 4).every(([w]) => w === 1600)).toBe(true)
-    expect(calls[4]![0]).toBe(1200)
+    expect(blob.size).toBeLessThanOrEqual(1_500_000)
+    // All four qualities at 2000 fail (min 2000×1500×0.6 = 1.8M), then 1500 wide.
+    expect(calls.slice(0, 4).every(([w]) => w === 2000)).toBe(true)
+    expect(calls[4]![0]).toBe(1500)
   })
 
   it("gives up gracefully, returning the smallest attempt", async () => {
@@ -96,13 +99,33 @@ describe("receiptPrefill", () => {
   })
 
   it("does not convert or prefill the amount for a group in another currency", () => {
-    const p = receiptPrefill(draft({ currency: "USD" }), "INR", false)
+    const p = receiptPrefill(
+      draft({ currency: "LKR", totalCents: 78000 }),
+      "INR",
+      false
+    )
     expect(p.amountCents).toBeNull()
     expect(p.currencyNotice).toBe(
-      "Receipt is in USD; this group uses INR. Enter the amount in INR."
+      "Receipt is in LKR; this group uses INR. Enter the amount in INR."
     )
+    // …but the receipt total is kept, for the banner and in the notes.
+    expect(p.foreignTotal).toEqual({ currency: "LKR", cents: 78000 })
+    expect(foreignTotalLabel(p.foreignTotal!)).toMatch(/^LKR 780[.,]00$/)
+    expect(p.notes).toMatch(/Receipt total — /)
     expect(p.date).toBe("2026-10-03")
     expect(p.description).toBe("Chaayos")
+  })
+
+  it("prefills a Sri Lankan receipt on a free-currency form (any ISO code)", () => {
+    const p = receiptPrefill(
+      draft({ currency: "LKR", totalCents: 78000 }),
+      "INR",
+      true
+    )
+    expect(p.currency).toBe("LKR")
+    expect(p.amountCents).toBe(78000)
+    expect(p.foreignTotal).toBeNull()
+    expect(p.currencyNotice).toBeNull()
   })
 
   it("switches a free-currency form to a supported receipt currency", () => {
@@ -112,10 +135,11 @@ describe("receiptPrefill", () => {
     expect(p.currencyNotice).toBeNull()
   })
 
-  it("refuses unsupported currencies even when the form can switch", () => {
-    const p = receiptPrefill(draft({ currency: "THB" }), "INR", true)
+  it("refuses codes this browser doesn't know, keeping the total", () => {
+    const p = receiptPrefill(draft({ currency: "XQQ" }), "INR", true)
     expect(p.amountCents).toBeNull()
-    expect(p.currencyNotice).toMatch(/THB/)
+    expect(p.currencyNotice).toMatch(/XQQ/)
+    expect(p.foreignTotal).toEqual({ currency: "XQQ", cents: 66000 })
   })
 
   it("assumes the form currency when the receipt shows none, and says so", () => {
@@ -131,7 +155,55 @@ describe("receiptPrefill", () => {
   })
 })
 
+describe("partialPrefill", () => {
+  it("fills what has arrived; the amount waits for a matching currency", () => {
+    expect(partialPrefill({ merchant: "CHAAYOS" }, "INR", false)).toEqual({
+      description: "Chaayos",
+    })
+    expect(
+      partialPrefill({ currency: "INR", totalCents: 66000 }, "INR", false)
+    ).toEqual({ amountCents: 66000 })
+    expect(partialPrefill({ totalCents: 66000 }, "INR", false)).toEqual({})
+    expect(
+      partialPrefill({ currency: "LKR", totalCents: 78000 }, "INR", false)
+    ).toEqual({})
+    expect(
+      partialPrefill({ currency: "LKR", totalCents: 78000 }, "INR", true)
+    ).toEqual({ currency: "LKR", amountCents: 78000 })
+  })
+})
+
 describe("itemizedNotes", () => {
+  it("lists each printed tax, charge and discount", () => {
+    const text = itemizedNotes(
+      draft({
+        taxes: [
+          {
+            kind: "CGST",
+            label: "CGST 2.5%",
+            ratePercent: 2.5,
+            amountCents: 1571,
+            inclusive: false,
+          },
+          {
+            kind: "SGST",
+            label: "SGST 2.5%",
+            ratePercent: 2.5,
+            amountCents: 1572,
+            inclusive: false,
+          },
+        ],
+        fees: [{ kind: "ROUND_OFF", label: "Round off", amountCents: -43 }],
+        discounts: [{ label: "Member", amountCents: 500 }],
+      }),
+      "INR"
+    )!
+    expect(text).toMatch(/CGST 2\.5% — ₹15\.71/)
+    expect(text).toMatch(/SGST 2\.5% — ₹15\.72/)
+    expect(text).toMatch(/Round off — −₹0\.43/)
+    expect(text).toMatch(/Member — −₹5\.00/)
+  })
+
   it("stays under the notes limit and keeps the totals lines", () => {
     const many = Array.from({ length: 80 }, (_, i) => ({
       name: `A rather long item name number ${i}`,
