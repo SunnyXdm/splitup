@@ -403,6 +403,75 @@ CREATE TABLE IF NOT EXISTS guest_claims (
 CREATE INDEX IF NOT EXISTS idx_guest_claims_guest ON guest_claims(guest_id);
 `);
 
+// MCP access (see src/oauth/*): an OAuth 2.1 authorization server for remote
+// connectors (dynamically registered clients, PKCE codes, rotating refresh
+// tokens) plus personal access tokens for CLI tools. Every secret is stored
+// only as its SHA-256 hash. A grant is one "connected app": the user's consent
+// for one client, which every access/refresh token of that client hangs off.
+db.exec(`
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  id TEXT PRIMARY KEY,
+  secret_hash TEXT,
+  name TEXT NOT NULL,
+  redirect_uris TEXT NOT NULL,
+  auth_method TEXT NOT NULL DEFAULT 'none',
+  client_uri TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_requests (
+  id TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+  redirect_uri TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  state TEXT,
+  resource TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS oauth_grants (
+  id INTEGER PRIMARY KEY,
+  client_id TEXT NOT NULL REFERENCES oauth_clients(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  scope TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_grants_user ON oauth_grants(user_id);
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  id TEXT PRIMARY KEY,
+  grant_id INTEGER NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE,
+  redirect_uri TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  id TEXT PRIMARY KEY,
+  grant_id INTEGER NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_grant ON oauth_tokens(grant_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expires ON oauth_tokens(expires_at);
+CREATE TABLE IF NOT EXISTS personal_access_tokens (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  hint TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_personal_access_tokens_user ON personal_access_tokens(user_id);
+`);
+
 export interface UserRow {
   id: number;
   shoo_sub: string;
@@ -522,6 +591,53 @@ export interface FriendRequestRow {
   from_id: number;
   to_email: string;
   created_at: string;
+}
+
+export interface OAuthClientRow {
+  id: string;
+  secret_hash: string | null;
+  name: string;
+  /** JSON string[] */
+  redirect_uris: string;
+  auth_method: 'none' | 'client_secret_post' | 'client_secret_basic';
+  client_uri: string | null;
+  created_at: string;
+}
+
+export interface OAuthRequestRow {
+  id: string;
+  client_id: string;
+  redirect_uri: string;
+  code_challenge: string;
+  scope: string;
+  state: string | null;
+  resource: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface OAuthGrantRow {
+  id: number;
+  client_id: string;
+  user_id: number;
+  scope: string;
+  resource: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface PersonalAccessTokenRow {
+  id: number;
+  user_id: number;
+  name: string;
+  token_hash: string;
+  /** The last few characters, shown in lists ("spu_…a1b2"). */
+  hint: string;
+  scope: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
 }
 
 export const nowIso = () => new Date().toISOString();

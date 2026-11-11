@@ -172,8 +172,20 @@ export function destroySession(c: Context): void {
   deleteCookie(c, COOKIE_NAME, { path: '/' });
 }
 
+/**
+ * Requests the MCP server dispatches to the API routes on a token owner's
+ * behalf (src/mcp/api.ts). Keyed by the Request object itself, so nothing
+ * arriving over the network can claim an entry.
+ */
+const internalUsers = new WeakMap<Request, UserRow>();
+
+export function asInternalRequest(request: Request, user: UserRow): Request {
+  internalUsers.set(request, user);
+  return request;
+}
+
 export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
-  const user = sessionUser(c);
+  const user = internalUsers.get(c.req.raw) ?? sessionUser(c);
   if (!user) throw new HTTPException(401, { message: 'unauthorized' });
   c.set('user', user);
   await next();

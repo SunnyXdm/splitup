@@ -2,6 +2,7 @@ import { HTTPException } from 'hono/http-exception';
 import { db, nowIso, type ExpenseRow, type GroupRow, type ShareRow, type UserRow } from '../db';
 import type { ExpenseBody } from '../validate';
 import { toExpense, type ActivityType, type Expense } from './wire';
+import { currentVia } from './via';
 
 const NOT_FOUND = () => new HTTPException(404, { message: 'not found' });
 
@@ -74,9 +75,11 @@ export function recordActivity(
   expenseId: number | null,
   summary: string,
 ): void {
+  // Writes made through an assistant say so: "… (via Claude)".
+  const via = currentVia();
   db.prepare(
     'INSERT INTO activity (actor_id, type, group_id, expense_id, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(actorId, type, groupId, expenseId, summary, nowIso());
+  ).run(actorId, type, groupId, expenseId, via ? `${summary} (via ${via})` : summary, nowIso());
 }
 
 export function sharesOf(expenseId: number): ShareRow[] {

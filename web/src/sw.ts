@@ -17,7 +17,14 @@ cleanupOutdatedCaches()
 // SPA navigations fall back to the precached shell; the API never does.
 registerRoute(
   new NavigationRoute(createHandlerBoundToURL("/index.html"), {
-    denylist: [/^\/api\//],
+    // Server routes a browser may navigate to: never answer them with the SPA.
+    // /oauth/authorize is where MCP connectors (Claude, ChatGPT) send the user.
+    denylist: [
+      /^\/api\//,
+      /^\/mcp(\/|$)/,
+      /^\/oauth\/(authorize|token|register|revoke)/,
+      /^\/\.well-known\//,
+    ],
   })
 )
 

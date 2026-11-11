@@ -2,6 +2,9 @@ import { addDays, endOfMonth, format, isValid, parse, startOfMonth, subMonths } 
 import { CATEGORIES } from './categories';
 import { currencyDigits, normalizeAmountText } from './money';
 import type { Category, Expense, SyncData } from './types';
+import { inDayRange, type DayRange } from '../../../shared/day-range';
+
+export { inDayRange, type DayRange };
 
 /**
  * Expense-history search & filters. Pure and snapshot-memoized: the haystack
@@ -74,11 +77,6 @@ function validDay(s: string | null | undefined): string | null {
   return isValid(parse(s, 'yyyy-MM-dd', new Date())) ? s : null;
 }
 
-export interface DayRange {
-  /** Inclusive YYYY-MM-DD bounds; null = open-ended. */
-  from: string | null;
-  to: string | null;
-}
 
 /**
  * A preset → inclusive calendar-day bounds in the device's LOCAL time zone
@@ -109,12 +107,6 @@ export function resolveDateRange(
     default:
       return { from: null, to: null };
   }
-}
-
-export function inDayRange(date: string, r: DayRange): boolean {
-  if (r.from !== null && !(date >= r.from)) return false;
-  if (r.to !== null && !(date <= r.to)) return false;
-  return true;
 }
 
 /** "Oct 1 – Oct 7", "From Oct 1", "Until Oct 7". */

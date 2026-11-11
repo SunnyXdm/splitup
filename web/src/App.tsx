@@ -6,6 +6,8 @@ import { clearPendingInvite, readPendingInvite, pendingInvitePath } from '@/lib/
 import { useNotificationNavigation, usePushReconcile } from '@/lib/push-hooks';
 import { useSyncData } from '@/lib/queries';
 import Account from './screens/Account';
+import Connections from './screens/Connections';
+import OAuthConsent from './screens/OAuthConsent';
 import Claim from './screens/Claim';
 import Activity from './screens/Activity';
 import ArchivedGroups from './screens/ArchivedGroups';
@@ -36,7 +38,7 @@ function PendingInviteRedirect() {
     // hijack a later sign-in. The user is on the invite URL from here on.
     clearPendingInvite();
     const target = pendingInvitePath(pending);
-    if (location.pathname !== target) navigate(target, { replace: true });
+    if (`${location.pathname}${location.search}` !== target) navigate(target, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return null;
@@ -66,6 +68,8 @@ export default function App() {
           <Route path="/insights" element={<Insights />} />
           <Route path="/recurring" element={<Recurring />} />
           <Route path="/account" element={<Account />} />
+          <Route path="/account/connections" element={<Connections />} />
+          <Route path="/oauth/consent" element={<OAuthConsent />} />
           <Route path="/join/:token" element={<Join />} />
           <Route path="/friend/:token" element={<FriendInvite />} />
           <Route path="/claim/:token" element={<Claim />} />

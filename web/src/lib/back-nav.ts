@@ -8,9 +8,9 @@ export function isTabRoot(pathname: string): boolean {
   return (TAB_ROOT_PATHS as readonly string[]).includes(pathname);
 }
 
-/** Single-purpose landing pages (invites, claims) render without tab bar or FAB. */
+/** Single-purpose landing pages (invites, claims, OAuth consent) render without tab bar or FAB. */
 export function isChromelessPath(pathname: string): boolean {
-  return /^\/(join|friend|claim)\/[^/]+\/?$/.test(pathname);
+  return /^\/(join|friend|claim)\/[^/]+\/?$/.test(pathname) || pathname === '/oauth/consent';
 }
 
 /**

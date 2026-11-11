@@ -7,7 +7,8 @@
  */
 const KEY = 'splitup-pending-invite';
 
-export type InviteKind = 'friend' | 'join' | 'claim';
+/** 'oauth': an MCP connector's consent request (/oauth/consent?request=…). */
+export type InviteKind = 'friend' | 'join' | 'claim' | 'oauth';
 
 export interface PendingInvite {
   kind: InviteKind;
@@ -27,12 +28,15 @@ const MAX_AGE_MS = 60 * 60 * 1000;
 /** Call before the app mounts: remember an invite URL the visitor arrived on. */
 export function capturePendingInviteFromUrl(): void {
   const match = window.location.pathname.match(INVITE_PATH);
-  if (!match) return;
+  const oauth =
+    window.location.pathname === '/oauth/consent'
+      ? new URLSearchParams(window.location.search).get('request')
+      : null;
+  const kind = match ? match[1] : oauth ? 'oauth' : null;
+  const token = match ? match[2] : oauth;
+  if (!kind || !token) return;
   try {
-    localStorage.setItem(
-      KEY,
-      JSON.stringify({ kind: match[1], token: match[2], capturedAt: Date.now() }),
-    );
+    localStorage.setItem(KEY, JSON.stringify({ kind, token, capturedAt: Date.now() }));
   } catch {
     // storage blocked (private mode) — the direct link still works when returnTo survives
   }
@@ -44,7 +48,10 @@ export function readPendingInvite(): PendingInvite | null {
     if (!raw) return null;
     const value = JSON.parse(raw) as PendingInvite;
     if (
-      (value.kind === 'friend' || value.kind === 'join' || value.kind === 'claim') &&
+      (value.kind === 'friend' ||
+        value.kind === 'join' ||
+        value.kind === 'claim' ||
+        value.kind === 'oauth') &&
       /^[0-9a-f]{16,64}$/.test(value.token) &&
       typeof value.capturedAt === 'number' &&
       Date.now() - value.capturedAt < MAX_AGE_MS
@@ -67,5 +74,6 @@ export function clearPendingInvite(): void {
 }
 
 export function pendingInvitePath(invite: PendingInvite): string {
+  if (invite.kind === 'oauth') return `/oauth/consent?request=${invite.token}`;
   return `/${invite.kind}/${invite.token}`;
 }

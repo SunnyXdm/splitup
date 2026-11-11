@@ -64,8 +64,16 @@ export default defineConfig({
     },
   },
   server: {
+    // ../shared holds the pure balance math the server imports too.
+    fs: { allow: [".", "../shared"] },
     proxy: {
       "/api": "http://localhost:8790",
+      // MCP + its OAuth endpoints live on the API server; /oauth/consent is
+      // a page of this app, so only the server-side OAuth paths are proxied.
+      "/mcp": "http://localhost:8790",
+      "/.well-known/oauth-protected-resource": "http://localhost:8790",
+      "/.well-known/oauth-authorization-server": "http://localhost:8790",
+      "^/oauth/(authorize|token|register|revoke)": "http://localhost:8790",
     },
   },
 })

@@ -4,10 +4,9 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
-import { ZodError } from 'zod';
 import { pruneExpired, type AppEnv } from './auth';
+import { errorResponse } from './errors';
 import { backupDaily, checkpoint, db } from './db';
 import { runRecurringGeneration } from './lib/recurring';
 import { csrfProtect, rateLimit, CSP } from './security';
@@ -23,6 +22,10 @@ import pushRoutes from './routes/push';
 import receiptRoutes from './routes/receipts';
 import recurringRoutes from './routes/recurring';
 import guestClaimRoutes from './routes/guest-claims';
+import { connectionRoutes, oauthConsentRoutes } from './routes/connections';
+import oauthRoutes from './oauth/routes';
+import { pruneOAuth } from './oauth/tokens';
+import mcpRoutes, { closeMcp } from './mcp/http';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT ?? 8790);
@@ -41,6 +44,11 @@ app.use(async (c, next) => {
     c.header('Content-Security-Policy', CSP);
   }
 });
+// MCP (Bearer tokens only) and the OAuth server connectors sign in through.
+// Neither reads the session cookie, so the CSRF middleware below doesn't apply.
+app.route('/', oauthRoutes);
+app.route('/', mcpRoutes);
+
 app.use('/api/*', csrfProtect);
 // Auth runs pre-session: key by IP so attacker-chosen cookies can't mint buckets.
 app.use('/api/auth/*', rateLimit(20, 'ip'));
@@ -62,6 +70,8 @@ app.route('/api/push', pushRoutes);
 app.route('/api/receipts', receiptRoutes);
 app.route('/api/recurring', recurringRoutes);
 app.route('/api/guest-claims', guestClaimRoutes);
+app.route('/api/connections', connectionRoutes);
+app.route('/api/oauth', oauthConsentRoutes);
 app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
 
 if (IS_PROD) {
@@ -74,27 +84,14 @@ if (IS_PROD) {
   });
 }
 
-app.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    // A plain-object `cause` carries extra fields for the client (e.g. the
-    // expense a reused idempotency key already recorded).
-    const extra =
-      err.cause !== null && typeof err.cause === 'object' && !(err.cause instanceof Error)
-        ? err.cause
-        : {};
-    return c.json({ ...extra, error: err.message || 'error' }, err.status);
-  }
-  if (err instanceof ZodError) {
-    const first = err.issues[0];
-    const where = first?.path.length ? `${first.path.join('.')}: ` : '';
-    return c.json({ error: first ? `${where}${first.message}` : 'invalid input' }, 400);
-  }
-  console.error(err);
-  return c.json({ error: 'internal error' }, 500);
-});
+app.onError(errorResponse);
 
-pruneExpired();
-setInterval(pruneExpired, 6 * 60 * 60 * 1000).unref();
+const prune = () => {
+  pruneExpired();
+  pruneOAuth();
+};
+prune();
+setInterval(prune, 6 * 60 * 60 * 1000).unref();
 
 const HOUR = 60 * 60 * 1000;
 // Tracked so shutdown can let an in-flight snapshot finish before db.close().
@@ -147,6 +144,7 @@ function shutdown(signal: string) {
   server.close(() => {
     void (backupInFlight ?? Promise.resolve()).then(close);
   });
+  void closeMcp().catch(() => {});
   setTimeout(close, 5000).unref();
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));

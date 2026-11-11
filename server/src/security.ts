@@ -63,32 +63,45 @@ function clientKey(c: Context): string {
 }
 
 /**
- * Fixed-window in-memory rate limiter; fine for a single-process deployment.
- * 'ip' mode keys strictly by remote address — use it for pre-session routes
- * (auth), where a cookie-derived key would be attacker-chosen.
+ * Fixed-window in-memory counter; fine for a single-process deployment.
+ * `hit(key)` counts one request and returns false once the key is over its
+ * limit for the current window.
  *
  * Buckets are re-inserted whenever their window restarts, so the Map's
  * insertion order is windowStart order: expired buckets are always at the
  * front and eviction is amortized O(1). A hard cap drops the oldest bucket.
+ */
+export function createLimiter(maxPerWindow: number, windowMs = WINDOW_MS) {
+  const buckets = new Map<string, Bucket>();
+  return (key: string): boolean => {
+    const now = Date.now();
+    for (const [k, b] of buckets) {
+      if (now - b.windowStart <= windowMs && buckets.size < MAX_BUCKETS) break;
+      buckets.delete(k);
+    }
+    const bucket = buckets.get(key);
+    if (!bucket || now - bucket.windowStart > windowMs) {
+      buckets.delete(key);
+      buckets.set(key, { count: 1, windowStart: now });
+      return true;
+    }
+    return ++bucket.count <= maxPerWindow;
+  };
+}
+
+/**
+ * Rate-limit middleware. 'ip' mode keys strictly by remote address — use it
+ * for pre-session routes (auth), where a cookie-derived key would be
+ * attacker-chosen.
  */
 export function rateLimit(
   maxPerWindow: number,
   mode: 'session' | 'ip' = 'session',
   windowMs = WINDOW_MS,
 ) {
-  const buckets = new Map<string, Bucket>();
+  const hit = createLimiter(maxPerWindow, windowMs);
   return async (c: Context, next: Next) => {
-    const now = Date.now();
-    for (const [k, b] of buckets) {
-      if (now - b.windowStart <= windowMs && buckets.size < MAX_BUCKETS) break;
-      buckets.delete(k);
-    }
-    const key = mode === 'ip' ? ipKey(c) : clientKey(c);
-    const bucket = buckets.get(key);
-    if (!bucket || now - bucket.windowStart > windowMs) {
-      buckets.delete(key);
-      buckets.set(key, { count: 1, windowStart: now });
-    } else if (++bucket.count > maxPerWindow) {
+    if (!hit(mode === 'ip' ? ipKey(c) : clientKey(c))) {
       throw new HTTPException(429, { message: 'too many requests' });
     }
     await next();

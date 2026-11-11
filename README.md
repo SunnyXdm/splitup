@@ -36,6 +36,7 @@ splitting expenses with friends, built to be safe, precise, and pleasant to use.
 - **Everyday utilities** — activity feed, CSV export, and payment reminders.
 - **Recurring bills** — rent, utilities and subscriptions repeat weekly, monthly or yearly; each due date lands in a "Due to add" inbox on Home to add (after a review) or skip, never posted on its own. Missed dates are caught up after server downtime.
 - **Receipt scanning** (optional) — snap a bill and watch Claude read it: its thinking streams live while the form fills in, the arithmetic is checked in code, and you still review the numbers, pick the split, and save.
+- **AI assistants (MCP)** — connect Claude, ChatGPT, Claude Code, Codex or Cursor to read balances and add expenses for you, through the same validation, history and undo as the app.
 - **Privacy-first authentication** — Google sign-in via [shoo.dev](https://shoo.dev); no passwords stored, no tracking.
 
 ## Architecture
@@ -62,7 +63,8 @@ flowchart LR
 | Package | Stack |
 |---------|-------|
 | `web/` | React 19, Vite, TypeScript, Tailwind CSS v4, shadcn (base-nova on [Base UI](https://base-ui.com)), TanStack Query, `vite-plugin-pwa` |
-| `server/` | [Hono](https://hono.dev), better-sqlite3, `jose`, Zod, executed with `tsx` |
+| `server/` | [Hono](https://hono.dev), better-sqlite3, `jose`, Zod, executed with `tsx`; MCP server on the official TypeScript SDK (`@modelcontextprotocol/server`) |
+| `shared/` | The pure balance / settle / explain / summary / money code. The web app re-exports it from `web/src/lib/*` and the MCP tools import it, so both compute every balance with the same code |
 
 The shoo id_token is verified server-side once (issuer and audience pinned) and
 immediately discarded; the application then runs on its own random httpOnly session
@@ -115,6 +117,8 @@ docker run -d -p 8790:8790 \
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `APP_ORIGIN` | `http://localhost:5173` | shoo JWT audience (`origin:<APP_ORIGIN>`), CSRF origin check, invite-link base |
+| `PUBLIC_ORIGIN` | `APP_ORIGIN` | Public origin of the server: OAuth issuer and the MCP endpoint (`<PUBLIC_ORIGIN>/mcp`). Only set it when the API is served from a different origin than the web app |
+| `OAUTH_REDIRECT_HOSTS` | – | Extra comma-separated hosts allowed as https OAuth redirect targets (built in: `claude.ai`, `claude.com`, `chatgpt.com`, `www.cursor.com`; loopback `http://localhost`/`127.0.0.1` is always allowed) |
 | `DB_PATH` | `server/data/splitup.db` | SQLite file, created on first run |
 | `PORT` | `8790` | API/server port |
 | `NODE_ENV` | – | `production` enables Secure cookies, CSP, and static serving of `web/dist` |
@@ -218,6 +222,77 @@ Each Codex scan uses the owner's ChatGPT plan quota. The image goes to a private
 dir for the duration of the scan and is deleted afterwards, and the Codex session is
 ephemeral.
 
+## MCP (AI assistants)
+
+Splitup is a remote [Model Context Protocol](https://modelcontextprotocol.io) server, so
+assistants can read **and** change your Splitup as you — through the same route
+handlers the app uses, so every write gets the same validation, edit history and undo,
+departed-member guards, settle-up batches, push notifications and activity entries
+(marked "… (via Claude)").
+
+**Endpoint:** `https://<your domain>/mcp` (Streamable HTTP, stateless; e.g.
+`https://splitup.sunnydx.dev/mcp`). It accepts only `Authorization: Bearer` tokens,
+never the session cookie. Account → **Connected apps & MCP** shows the URL, every
+connected app and token, and lets you revoke them.
+
+### Connect
+
+| Client | How |
+|--------|-----|
+| **Claude** (web, desktop, mobile) | Settings → Connectors → *Add custom connector* → paste the URL. You're sent to Splitup to sign in and approve; Claude registers itself (OAuth 2.1 + dynamic client registration). Team/Enterprise: an owner adds it under Organization settings → Connectors. |
+| **ChatGPT** | Add a custom MCP connector/app with the URL (developer mode or the plugin/connector builder, depending on your plan) and choose OAuth; sign in and approve on Splitup. |
+| **Claude Code** | OAuth: `claude mcp add --transport http splitup https://<your domain>/mcp`, then `/mcp` in a session to sign in. Or with a token: `claude mcp add --transport http splitup https://<your domain>/mcp --header "Authorization: Bearer spu_…"` |
+| **Codex CLI** | In `~/.codex/config.toml`: `[mcp_servers.splitup]` with `url = "https://<your domain>/mcp"` and `bearer_token_env_var = "SPLITUP_TOKEN"`, then `export SPLITUP_TOKEN=spu_…` |
+| **Cursor** | In `~/.cursor/mcp.json`: `{"mcpServers": {"splitup": {"url": "https://<your domain>/mcp", "headers": {"Authorization": "Bearer spu_…"}}}}` |
+| **Claude Desktop** | Same as Claude (custom connector, no token). For a token-based local config, use the `mcp-remote` bridge snippet shown when you create a token. |
+
+Tokens (`spu_…`) are created under Account → Connected apps & MCP → *Create token*;
+the token is shown once, with copy-paste setup for each client.
+
+### Scopes and tools
+
+- `splitup.read` — `whoami`, `list_groups`, `get_group` (members, balances, suggested
+  settlements), `list_friends`, `get_balance` (overall / per friend / per group, per
+  currency), `explain_balance` (the "Why?" trace), `search_expenses`, `get_expense`
+  (shares, split, history), `spending_summary`, `list_recurring` (+ due bills),
+  `list_activity`; resources `splitup://groups`, `splitup://groups/{id}`; prompts
+  `settle-up-summary`, `monthly-recap`.
+- `splitup.write` (implies read) — `add_expense`, `edit_expense`, `delete_expense`,
+  `restore_expense`, `record_payment` (settle-up through the app's batch flow, full
+  balance by default), `undo_payment`, `add_due_bill`, `skip_due_bill`, `create_group`,
+  `scan_receipt` (returns a draft only; nothing is saved until `add_expense`).
+
+Write tools are hidden from read-only tokens. `delete_expense`, `undo_payment` and
+`skip_due_bill` also require `confirm: true`. Amounts go in as decimal strings in major
+units (`"1250.50"`) and come back as `{ minor, amount, formatted, currency }`. People
+and groups are matched by id, (partial) name or email; ambiguous names return the
+candidates instead of guessing.
+
+### Authorization server
+
+- Discovery: `/.well-known/oauth-protected-resource/mcp` (and the root variant),
+  `/.well-known/oauth-authorization-server`; `401` from `/mcp` carries
+  `WWW-Authenticate: Bearer resource_metadata="…", scope="splitup.read splitup.write"`.
+- `/oauth/register` (RFC 7591; public clients by default), `/oauth/authorize`
+  (authorization code + PKCE S256 only, exact redirect URI match — any port for
+  loopback — `resource` must be `/mcp`, RFC 9207 `iss` on every response),
+  `/oauth/token` (code + refresh with rotation; reusing a rotated refresh token or a
+  code revokes the whole grant), `/oauth/revoke` (RFC 7009).
+- Sign-in and consent happen in the app (`/oauth/consent`): the user can untick
+  "Make changes for you" to grant read-only access.
+- Access tokens live 1 hour, refresh tokens 30 days, personal access tokens until
+  revoked. All are opaque random strings stored only as SHA-256 hashes.
+- Rate limits: 120 MCP requests/min per token, 300/min per user; OAuth endpoints are
+  limited per IP. Logs record tool name, user id and duration only.
+
+### Behind a reverse proxy
+
+`/mcp` normally answers with plain JSON; if a response streams (SSE) it is sent with
+`X-Accel-Buffering: no` and `Cache-Control: no-transform`, but make sure the proxy
+does not buffer `text/event-stream` and allows request bodies of ~6 MB (receipt
+images). Forward `/mcp`, `/oauth/*` and `/.well-known/oauth-*` to the server like
+`/api`, and keep `TRUST_PROXY=1` so per-IP limits see the real client.
+
 ## Security
 
 - The shoo id_token is verified server-side against shoo's JWKS (ES256, issuer and audience pinned); the JWT is never stored and never reused.
@@ -226,6 +301,7 @@ ephemeral.
 - Per-session rate limiting (300/min general, 20/min on auth), a 64 KB body cap (4 MB on the receipt-scan route only), and strict CSP and security headers on HTML.
 - Every input is Zod-validated, all SQL uses prepared statements, and money is integer minor units end to end.
 - Non-members receive `404` (never `403`), so resource existence never leaks.
+- MCP is Bearer-only (no cookies, so no CSRF surface); OAuth redirect URIs must be registered exactly and point at an allowlisted https host or loopback; tokens are hashed at rest and revocable per app.
 
 ## Testing
 

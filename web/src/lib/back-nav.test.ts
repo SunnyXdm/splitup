@@ -26,4 +26,8 @@ describe('back navigation', () => {
     expect(isChromelessPath('/claim/abc')).toBe(true);
     expect(isChromelessPath('/friends/3')).toBe(false);
   });
+  it('treats the OAuth consent page as chromeless, and Connections as an Account page', () => {
+    expect(isChromelessPath('/oauth/consent')).toBe(true);
+    expect(parentPath('/account/connections')).toBe('/account');
+  });
 });

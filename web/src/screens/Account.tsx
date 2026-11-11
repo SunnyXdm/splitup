@@ -11,6 +11,7 @@ import {
   Moon,
   MoonStar,
   PencilLine,
+  PlugZap,
   Repeat,
   Sun,
 } from 'lucide-react';
@@ -189,6 +190,14 @@ export default function Account() {
               icon={<Archive className="size-5" aria-hidden="true" />}
               title="Archived groups"
               detail={archivedCount === 0 ? 'None' : `${archivedCount} hidden from Home`}
+            />
+          </li>
+          <li>
+            <NavRow
+              to="/account/connections"
+              icon={<PlugZap className="size-5" aria-hidden="true" />}
+              title="Connected apps & MCP"
+              detail="Claude, ChatGPT and other assistants"
             />
           </li>
           {data.groups.length > 0 ? (

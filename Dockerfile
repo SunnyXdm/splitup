@@ -2,6 +2,8 @@ FROM node:24 AS webbuild
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
+# Pure balance math shared by web and server (web/src/lib re-exports it).
+COPY shared/ /app/shared/
 COPY web/ .
 RUN npm run build
 
@@ -43,6 +45,8 @@ ENV CODEX_HOME=/codex
 WORKDIR /app/server
 COPY --from=serverdeps /app/server/node_modules ./node_modules
 COPY server/ .
+# The MCP tools compute balances with the same code the web app uses.
+COPY shared/ /app/shared/
 COPY --from=webbuild /app/web/dist /app/web/dist
 EXPOSE 8790
 # node is PID 1 directly (no npm/npx wrapper) so SIGTERM reaches the app.
