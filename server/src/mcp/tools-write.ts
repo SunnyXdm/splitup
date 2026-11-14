@@ -14,7 +14,17 @@ import { localToday } from '../lib/recurring';
 import { owedFromSplitMeta, type SplitMeta } from '../lib/split-meta';
 import { CATEGORIES, SETTLEMENT_METHODS } from '../validate';
 import { callApi } from './api';
-import { amountInput, confirmFlag, defineTool, isoDay, ok, ref, type ToolEnv } from './kit';
+import {
+  amountInput,
+  confirmFlag,
+  currencyCode,
+  defineTool,
+  idInput,
+  isoDay,
+  ok,
+  ref,
+  type ToolEnv,
+} from './kit';
 import { scanReceipt } from './receipt';
 import { groupDetail } from './tools-read';
 import {
@@ -224,12 +234,8 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
         friend: ref('Friend, for a 1:1 expense outside groups').optional(),
         description: z.string().trim().min(1).max(200),
         amount: amountInput('Total amount'),
-        currency: z
-          .string()
-          .regex(/^[A-Z]{3}$/)
-          .optional()
-          .describe('ISO 4217 code, e.g. INR'),
-        date: isoDay.optional().describe('Default: today'),
+        currency: currencyCode().optional(),
+        date: isoDay('default: today').optional(),
         paid_by: ref('Who paid (default: me)').optional(),
         payers: payersInput.optional(),
         split: splitInput.optional(),
@@ -300,13 +306,19 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
         'someone changed it meanwhile. Recorded in the expense history; undo with restore_expense.',
       write: true,
       input: z.object({
-        expense_id: z.number().int().positive(),
+        expense_id: idInput(),
         expected_updated_at: z.string().max(40).optional(),
         description: z.string().trim().min(1).max(200).optional(),
         amount: amountInput('New total').optional(),
-        date: isoDay.optional(),
+        date: isoDay().optional(),
         category: z.enum(CATEGORIES).optional(),
-        notes: z.string().trim().max(1000).nullable().optional().describe('null clears the notes'),
+        notes: z
+          .string()
+          .trim()
+          .max(1000)
+          .nullable()
+          .optional()
+          .describe('New notes; an empty string "" clears them'),
         paid_by: ref('Who paid').optional(),
         payers: payersInput.optional(),
         split: splitInput.optional(),
@@ -387,7 +399,7 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
         'with restore_expense). Settle-up payments are removed with undo_payment instead. Ask ' +
         'the user to confirm first, then pass confirm: true.',
       write: true,
-      input: z.object({ expense_id: z.number().int().positive(), confirm: confirmFlag }),
+      input: z.object({ expense_id: idInput(), confirm: confirmFlag }),
       annotations: DESTRUCTIVE,
     },
     async ({ expense_id }) => {
@@ -418,8 +430,8 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
         'deleted at; for a live one, pass the revision to revert to.',
       write: true,
       input: z.object({
-        expense_id: z.number().int().positive(),
-        revision: z.number().int().positive().optional(),
+        expense_id: idInput(),
+        revision: idInput().optional(),
       }),
       annotations: WRITE,
     },
@@ -471,11 +483,10 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
         group: ref('Settle only inside this group').optional(),
         direction: z.enum(['i_paid', 'they_paid']).optional(),
         amount: amountInput('Cash amount (default: the full balance)').optional(),
-        currency: z
-          .string()
-          .regex(/^[A-Z]{3}$/)
-          .optional(),
-        date: isoDay.optional().describe('Default: today'),
+        currency: currencyCode(
+          'e.g. INR (default: the currency you owe or are owed in)',
+        ).optional(),
+        date: isoDay('default: today').optional(),
         method: z.enum(SETTLEMENT_METHODS).optional(),
         reference: z.string().trim().max(100).optional().describe('e.g. a UPI reference'),
         note: z.string().trim().max(500).optional(),
@@ -577,8 +588,8 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
         'Ask the user to confirm first, then pass confirm: true.',
       write: true,
       input: z.object({
-        batch_id: z.number().int().positive().optional(),
-        expense_id: z.number().int().positive().optional().describe('A payment row of the batch'),
+        batch_id: idInput().optional(),
+        expense_id: idInput('A payment row of the batch').optional(),
         confirm: confirmFlag,
       }),
       annotations: DESTRUCTIVE,
@@ -614,9 +625,9 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
         'template says — optionally with a different amount or date (the split re-applies).',
       write: true,
       input: z.object({
-        occurrence_id: z.number().int().positive(),
+        occurrence_id: idInput(),
         amount: amountInput("This time's amount").optional(),
-        date: isoDay.optional(),
+        date: isoDay().optional(),
       }),
       annotations: { ...WRITE, idempotentHint: true },
     },
@@ -650,7 +661,7 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
         'Skip one due occurrence of a recurring bill (it will not be added; the bill keeps ' +
         'recurring). Ask the user first, then pass confirm: true.',
       write: true,
-      input: z.object({ occurrence_id: z.number().int().positive(), confirm: confirmFlag }),
+      input: z.object({ occurrence_id: idInput(), confirm: confirmFlag }),
       annotations: { ...DESTRUCTIVE, idempotentHint: true },
     },
     async ({ occurrence_id }) => {
@@ -677,10 +688,7 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
       input: z.object({
         name: z.string().trim().min(1).max(80),
         emoji: z.string().min(1).max(8).optional(),
-        currency: z
-          .string()
-          .regex(/^[A-Z]{3}$/)
-          .optional(),
+        currency: currencyCode("e.g. INR (default: the user's default currency)").optional(),
         members: z.array(ref('Friend to add')).max(30).optional(),
       }),
       annotations: WRITE,
@@ -718,12 +726,8 @@ export function registerWriteTools(server: McpServer, env: ToolEnv): void {
       input: z.object({
         image_base64: z.string().max(5_000_000).optional(),
         mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp']).optional(),
-        image_url: z.string().url().max(2000).optional(),
-        currency: z
-          .string()
-          .regex(/^[A-Z]{3}$/)
-          .optional()
-          .describe('Expected currency, if known'),
+        image_url: z.string().url().max(2000).optional().describe('Public https URL of the image'),
+        currency: currencyCode('the expected one, if known').optional(),
       }),
       // Part of adding an expense (and it spends the user's scan quota).
       write: true,

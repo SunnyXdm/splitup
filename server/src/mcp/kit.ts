@@ -2,6 +2,7 @@ import type {
   CallToolResult,
   McpServer,
   ServerContext,
+  StandardSchemaWithJSON,
   ToolAnnotations,
 } from '@modelcontextprotocol/server';
 import { HTTPException } from 'hono/http-exception';
@@ -83,25 +84,179 @@ export function toolError(err: unknown): CallToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
-/** A person (or group) by id, exact/partial name, or email. */
+/** A person (or group) by id, exact/partial name, or email. Advertised as a plain string. */
 export const ref = (what: string) =>
   z
     .union([z.number().int().positive(), z.string().trim().min(1).max(200)])
-    .describe(`${what}: numeric id, name (partial ok), or email. "me" means the signed-in user.`);
+    .describe(
+      `${what}: numeric id like "12", name (partial ok), or email. "me" means the signed-in user.`,
+    );
+
+/** A row id. Advertised as an integer; a numeric string like "12" is accepted too. */
+export const idInput = (what?: string) => {
+  const schema = z.preprocess(
+    (v) => (typeof v === 'string' && /^\s*\d{1,15}\s*$/.test(v) ? Number(v) : v),
+    z.number().int().positive(),
+  );
+  return what ? schema.describe(what) : schema;
+};
 
 export const amountInput = (what: string) =>
   z
     .union([z.string().trim().min(1).max(40), z.number().positive()])
     .describe(`${what} as a decimal string in major units, e.g. "1250.50" (not minor units)`);
 
-export const isoDay = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'use YYYY-MM-DD')
-  .describe('Calendar date, YYYY-MM-DD');
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A calendar date; `note` (e.g. "default: today") is added to the description. */
+export const isoDay = (note?: string) =>
+  z
+    .string()
+    .regex(ISO_DAY, 'use YYYY-MM-DD')
+    .describe(note ? `Calendar date, YYYY-MM-DD (${note})` : 'Calendar date, YYYY-MM-DD');
+
+export const currencyCode = (note = 'e.g. INR') =>
+  z
+    .string()
+    .regex(/^[A-Z]{3}$/)
+    .describe(`ISO 4217 currency code, ${note}`);
 
 export const confirmFlag = z
   .literal(true)
   .describe('Must be true. Only set it after the user explicitly confirmed this action.');
+
+type JsonSchema = Record<string, unknown>;
+
+/** Above this a numeric bound is a representation limit, not a rule worth telling the model. */
+const MEANINGFUL_BOUND = 1e9;
+
+const clause = (text: string) => text.trim().replace(/\.$/, '');
+
+/**
+ * Rewrites a JSON Schema into the subset every LLM provider accepts for tool
+ * parameters (Gemini function declarations, OpenAI/Azure strict-ish validators,
+ * OpenRouter backends): only type, description, properties, required, items
+ * and string enums. Unions collapse to their most permissive simple type
+ * (id|name → string, null branches dropped), and bounds, defaults and formats
+ * move into the description. The zod schema still validates every call, so
+ * nothing gets looser server-side — the advertised shape just gets plainer.
+ */
+function portable(node: JsonSchema): JsonSchema {
+  const notes: string[] = [];
+  let s = node;
+  const alts = (s.anyOf ?? s.oneOf) as JsonSchema[] | undefined;
+  if (alts) {
+    const { anyOf: _a, oneOf: _o, ...rest } = s;
+    s = { ...collapse(alts.filter((a) => a.type !== 'null')), ...rest };
+  }
+  if (s.$ref !== undefined || s.allOf !== undefined) {
+    throw new Error('portable(): $ref / allOf are not supported in tool schemas');
+  }
+
+  let type = s.type;
+  if (Array.isArray(type)) type = type.find((t) => t !== 'null') ?? 'string';
+  let values = s.enum as unknown[] | undefined;
+  if (s.const !== undefined) {
+    if (typeof s.const === 'string') values = [s.const];
+    else type = typeof s.const === 'boolean' ? 'boolean' : 'number';
+    type ??= 'string';
+  }
+  if (values) {
+    values = values.filter((v) => v !== null);
+    if (values.every((v) => typeof v === 'string')) type = 'string';
+    else {
+      notes.push(`One of ${values.map((v) => JSON.stringify(v)).join(', ')}`);
+      values = undefined;
+    }
+  }
+  if (type === undefined) type = s.properties ? 'object' : 'string';
+
+  const description = typeof s.description === 'string' ? s.description : '';
+  if (type === 'integer' || type === 'number') {
+    const kind = type === 'integer' ? 'Integer' : 'Number';
+    const min = s.minimum as number | undefined;
+    const max = s.maximum as number | undefined;
+    const xmin = s.exclusiveMinimum as number | undefined;
+    const xmax = s.exclusiveMaximum as number | undefined;
+    const lo =
+      min !== undefined
+        ? `${min}`
+        : xmin === undefined
+          ? null
+          : type === 'integer'
+            ? `${xmin + 1}`
+            : null;
+    const hi = max !== undefined && Math.abs(max) < MEANINGFUL_BOUND ? `${max}` : null;
+    if (lo !== null && hi !== null) notes.push(`${kind} ${lo}–${hi}`);
+    else if (lo !== null && lo !== '1') notes.push(`${kind} ≥ ${lo}`);
+    else if (lo === null && xmin !== undefined) notes.push(`Greater than ${xmin}`);
+    else if (hi !== null) notes.push(`${kind} ≤ ${hi}`);
+    if (xmax !== undefined && Math.abs(xmax) < MEANINGFUL_BOUND) notes.push(`Less than ${xmax}`);
+  }
+  if (type === 'string' && !description) {
+    if (typeof s.format === 'string') notes.push(`Format: ${s.format}`);
+    else if (typeof s.pattern === 'string') notes.push(`Must match ${s.pattern}`);
+  }
+  if (type === 'array' && typeof s.minItems === 'number' && s.minItems > 0) {
+    notes.push(`At least ${s.minItems} item${s.minItems === 1 ? '' : 's'}`);
+  }
+  if (s.default !== undefined && !/default/i.test(description)) {
+    notes.push(`Default: ${JSON.stringify(s.default)}`);
+  }
+
+  const out: JsonSchema = { type };
+  const text = [description, ...notes].filter(Boolean).map(clause).join('. ');
+  if (text) out.description = text;
+  if (values) out.enum = values;
+  if (type === 'array')
+    out.items = portable((s.items as JsonSchema | undefined) ?? { type: 'string' });
+  if (type === 'object') {
+    const props = (s.properties ?? {}) as Record<string, JsonSchema>;
+    out.properties = Object.fromEntries(
+      Object.entries(props).map(([key, value]) => [key, portable(value)]),
+    );
+    const required = ((s.required ?? []) as string[]).filter((key) => key in props);
+    if (required.length > 0) out.required = required;
+  }
+  return out;
+}
+
+/** One simple schema standing in for a union: string wins, then number, then the first branch. */
+function collapse(alts: JsonSchema[]): JsonSchema {
+  if (alts.length === 1) return alts[0];
+  const simple = alts.map(portable);
+  if (simple.every((a) => Array.isArray(a.enum))) {
+    return { type: 'string', enum: [...new Set(simple.flatMap((a) => a.enum as string[]))] };
+  }
+  const described = alts.find((a) => typeof a.description === 'string');
+  const keep = described ? { description: described.description } : {};
+  if (simple.some((a) => a.type === 'string')) return { type: 'string', ...keep };
+  if (simple.every((a) => a.type === 'integer')) return { type: 'integer', ...keep };
+  if (simple.every((a) => a.type === 'integer' || a.type === 'number')) {
+    return { type: 'number', ...keep };
+  }
+  return alts[0];
+}
+
+/** The JSON Schema a tool advertises in tools/list (see {@link portable}). */
+export const advertisedSchema = (schema: z.ZodType): JsonSchema =>
+  portable(z.toJSONSchema(schema, { io: 'input', target: 'draft-2020-12' }) as JsonSchema);
+
+/** A Standard Schema that validates with zod but advertises the portable JSON Schema. */
+function portableInput<S extends z.ZodObject>(
+  schema: S,
+): StandardSchemaWithJSON<z.input<S>, z.output<S>> {
+  let json: JsonSchema | undefined;
+  const advertised = () => (json ??= advertisedSchema(schema));
+  return {
+    '~standard': {
+      version: 1,
+      vendor: 'splitup',
+      validate: schema['~standard'].validate,
+      jsonSchema: { input: advertised, output: advertised },
+    },
+  };
+}
 
 interface ToolSpec<S extends z.ZodObject> {
   title: string;
@@ -157,7 +312,7 @@ export function defineTool<S extends z.ZodObject>(
     {
       title: spec.title,
       description: spec.description,
-      inputSchema: spec.input,
+      inputSchema: portableInput(spec.input),
       annotations: { title: spec.title, openWorldHint: false, ...spec.annotations },
     },
     handler as never,

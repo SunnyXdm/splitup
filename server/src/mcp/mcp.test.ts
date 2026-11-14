@@ -119,6 +119,60 @@ async function mcpClient(token: string): Promise<Client> {
   return client;
 }
 
+/**
+ * The subset of JSON Schema every major LLM tool-calling API accepts (it is
+ * what a Gemini FunctionDeclaration allows, minus `nullable`/`format`):
+ * returns one line per violation, empty when the schema is portable.
+ */
+function portabilityProblems(schema: unknown, at: string, root = false): string[] {
+  const allowed = new Set(['type', 'description', 'properties', 'required', 'items', 'enum']);
+  const simple = new Set(['string', 'number', 'integer', 'boolean', 'array', 'object']);
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
+    return [`${at}: not a schema object`];
+  }
+  const s = schema as Record<string, unknown>;
+  const problems = Object.keys(s)
+    .filter((k) => !allowed.has(k))
+    .map((k) => `${at}: keyword ${k}`);
+  if (typeof s.type !== 'string' || !simple.has(s.type)) {
+    problems.push(`${at}: type ${JSON.stringify(s.type)}`);
+  }
+  if (root && s.type !== 'object') problems.push(`${at}: root must be an object`);
+  if (s.description !== undefined && typeof s.description !== 'string') {
+    problems.push(`${at}: description`);
+  }
+  if (s.enum !== undefined) {
+    const values = s.enum;
+    if (s.type !== 'string' || !Array.isArray(values) || values.length === 0) {
+      problems.push(`${at}: enum must be a non-empty list on a string`);
+    } else if (!values.every((v) => typeof v === 'string')) {
+      problems.push(`${at}: non-string enum value`);
+    }
+  }
+  if (s.type === 'object') {
+    const props = (s.properties ?? {}) as Record<string, unknown>;
+    if (typeof props !== 'object' || Array.isArray(props)) problems.push(`${at}: properties`);
+    for (const [key, value] of Object.entries(props)) {
+      problems.push(...portabilityProblems(value, `${at}.${key}`));
+    }
+    const required = s.required ?? [];
+    if (!Array.isArray(required) || !required.every((k) => typeof k === 'string' && k in props)) {
+      problems.push(`${at}: required lists unknown properties`);
+    }
+  } else if (s.properties !== undefined || s.required !== undefined) {
+    problems.push(`${at}: properties/required on a non-object`);
+  }
+  if (s.type === 'array') {
+    if (s.items === undefined) problems.push(`${at}: array without items`);
+    else problems.push(...portabilityProblems(s.items, `${at}[]`));
+    const item = s.items as { type?: unknown } | undefined;
+    if (item?.type === 'array') problems.push(`${at}: nested arrays`);
+  } else if (s.items !== undefined) {
+    problems.push(`${at}: items on a non-array`);
+  }
+  return problems;
+}
+
 interface ToolOut {
   isError: boolean;
   text: string;
@@ -871,6 +925,37 @@ describe('MCP tools', () => {
     for (const a of activity) assert.match(a.summary, /\(via Test CLI\)$/);
   });
 
+  it('accepts what portable schemas advertise: string ids, names, string amounts, "" clears', async () => {
+    const asString = await tool(asha, 'get_expense', { expense_id: String(taxiId) });
+    assert.equal(asString.isError, false, asString.text);
+    assert.equal(asString.data.id, taxiId);
+    assert.equal((await tool(asha, 'get_expense', { expense_id: taxiId })).data.id, taxiId);
+    assert.equal((await tool(asha, 'get_expense', { expense_id: '1.5' })).isError, true);
+    assert.equal((await tool(asha, 'get_expense', { expense_id: 'taxi' })).isError, true);
+
+    const byName = await tool(asha, 'get_balance', { friend: 'Bilal' });
+    const byId = await tool(asha, 'get_balance', { friend: String(id('Bilal')) });
+    const byNumber = await tool(asha, 'get_balance', { friend: id('Bilal') });
+    assert.equal(byName.isError, false, byName.text);
+    assert.deepEqual(byId.data, byName.data);
+    assert.deepEqual(byNumber.data, byName.data);
+
+    const noted = await tool(asha, 'edit_expense', {
+      expense_id: String(taxiId),
+      amount: '300.50',
+      notes: 'airport run',
+    });
+    assert.equal(noted.isError, false, noted.text);
+    assert.equal(noted.data.expense.notes, 'airport run');
+    const cleared = await tool(asha, 'edit_expense', { expense_id: taxiId, notes: '' });
+    assert.equal(cleared.isError, false, cleared.text);
+    assert.equal(cleared.data.expense.notes, undefined);
+    await tool(asha, 'edit_expense', { expense_id: taxiId, notes: 'again' });
+    const nulled = await tool(asha, 'edit_expense', { expense_id: taxiId, notes: null });
+    assert.equal(nulled.isError, false, nulled.text);
+    assert.equal(nulled.data.expense.notes, undefined, 'null still clears (older clients)');
+  });
+
   it('records a full settle-up across groups and direct expenses, then undoes it', async () => {
     const before = await tool(asha, 'get_balance', { friend: 'Bilal' });
     const owed = before.data.balances[0].net.minor;
@@ -1027,6 +1112,26 @@ describe('MCP tools', () => {
     assert.ok(!names.includes('delete_expense'));
     const res = await tool(readOnly, 'get_balance');
     assert.equal(res.isError, false);
+  });
+
+  it('advertises only portable JSON Schema (Gemini / OpenAI-strict / OpenRouter safe)', async () => {
+    const full = (await asha.listTools()).tools;
+    const read = (await readOnly.listTools()).tools;
+    assert.ok(full.length > read.length && read.length > 0);
+    for (const t of [...full, ...read]) {
+      assert.deepEqual(portabilityProblems(t.inputSchema, t.name, true), [], t.name);
+      assert.equal(t.outputSchema, undefined, `${t.name} advertises no outputSchema`);
+    }
+    const add = full.find((t) => t.name === 'add_expense')!.inputSchema as any;
+    assert.equal(add.properties.amount.type, 'string');
+    assert.equal(add.properties.group.type, 'string');
+    assert.match(add.properties.date.description, /YYYY-MM-DD/);
+    assert.match(add.properties.currency.description, /ISO 4217/);
+    const del = full.find((t) => t.name === 'delete_expense')!.inputSchema as any;
+    assert.equal(del.properties.expense_id.type, 'integer');
+    assert.equal(del.properties.confirm.type, 'boolean');
+    const search = full.find((t) => t.name === 'search_expenses')!.inputSchema as any;
+    assert.match(search.properties.limit.description, /1–100.*Default: 20/);
   });
 
   it('serves resources and prompts', async () => {

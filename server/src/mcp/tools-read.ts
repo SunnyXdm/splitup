@@ -18,7 +18,7 @@ import type { Expense, SyncData } from '../../../shared/types';
 import { localToday } from '../lib/recurring';
 import { CATEGORIES } from '../validate';
 import { callApi } from './api';
-import { defineTool, isoDay, ok, ref, text, type ToolEnv } from './kit';
+import { defineTool, idInput, isoDay, ok, ref, text, type ToolEnv } from './kit';
 import {
   ToolError,
   addDays,
@@ -244,7 +244,13 @@ export function registerReadTools(server: McpServer, env: ToolEnv): void {
         'balance, and recent expenses.',
       input: z.object({
         group: ref('Group'),
-        expense_limit: z.number().int().min(0).max(100).default(10),
+        expense_limit: z
+          .number()
+          .int()
+          .min(0)
+          .max(100)
+          .default(10)
+          .describe('How many recent expenses to include'),
       }),
       annotations: READ,
     },
@@ -388,7 +394,13 @@ export function registerReadTools(server: McpServer, env: ToolEnv): void {
         friend: ref('Person').optional(),
         group: ref('Group').optional(),
         person: ref('In group mode, the other member to explain the pair balance with').optional(),
-        ledger_limit: z.number().int().min(0).max(200).default(30),
+        ledger_limit: z
+          .number()
+          .int()
+          .min(0)
+          .max(200)
+          .default(30)
+          .describe('How many ledger lines to include'),
       }),
       annotations: READ,
     },
@@ -506,8 +518,8 @@ export function registerReadTools(server: McpServer, env: ToolEnv): void {
         'for non-group), category, type. Returns ids for get_expense / edit_expense.',
       input: z.object({
         text: z.string().max(200).optional(),
-        from: isoDay.optional(),
-        to: isoDay.optional(),
+        from: isoDay().optional(),
+        to: isoDay().optional(),
         person: ref('Someone who holds a share').optional(),
         group: z
           .union([
@@ -519,7 +531,7 @@ export function registerReadTools(server: McpServer, env: ToolEnv): void {
           .describe('Group id/name, or "direct" for expenses outside groups'),
         category: z.enum(CATEGORIES).optional(),
         type: z.enum(['all', 'expenses', 'payments']).default('all'),
-        limit: z.number().int().min(1).max(100).default(20),
+        limit: z.number().int().min(1).max(100).default(20).describe('How many to return'),
       }),
       annotations: READ,
     },
@@ -574,7 +586,7 @@ export function registerReadTools(server: McpServer, env: ToolEnv): void {
         'One expense or payment by id, including deleted ones you could see: every share ' +
         '(paid/owed per person), how it was split, its settle-up batch, and its full change ' +
         'history (revision numbers usable with restore_expense).',
-      input: z.object({ expense_id: z.number().int().positive() }),
+      input: z.object({ expense_id: idInput() }),
       annotations: READ,
     },
     async ({ expense_id }) => {
@@ -664,8 +676,8 @@ export function registerReadTools(server: McpServer, env: ToolEnv): void {
           .regex(/^(this-month|last-month|last-30-days|this-year|all|\d{4}-\d{2})$/)
           .optional()
           .describe('this-month (default), last-month, last-30-days, this-year, all, or YYYY-MM'),
-        from: isoDay.optional(),
-        to: isoDay.optional(),
+        from: isoDay().optional(),
+        to: isoDay().optional(),
         group: ref('Group').optional(),
       }),
       annotations: READ,
@@ -738,7 +750,7 @@ export function registerReadTools(server: McpServer, env: ToolEnv): void {
         'Recent activity feed (newest first): expenses added/edited/deleted, payments, group ' +
         'changes — including changes made by other people and by connected assistants.',
       input: z.object({
-        limit: z.number().int().min(1).max(200).default(20),
+        limit: z.number().int().min(1).max(200).default(20).describe('How many to return'),
         group: ref('Only this group').optional(),
       }),
       annotations: READ,
